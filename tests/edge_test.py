@@ -132,6 +132,55 @@ def test_transaction_isolation(binary, tmp):
     check("a transaction reads its own changes and rolls back", ok and ok2)
 
 
+def test_transaction_vector_visibility(binary, tmp):
+    """A transaction sees the vector changes of its own statements, and a
+    rollback restores the previous vectors (rules 2.3)."""
+    data = tmp / "txnvec"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR(2))")
+    db.request("INSERT INTO t VALUES (1, '[10,0]'), (2, '[0,20]')")
+    db.request("BEGIN")
+    db.request("UPDATE t SET e = '[0,0]' WHERE id = 1")
+    inside = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t ORDER BY d LIMIT 1")
+    db.request("ROLLBACK")
+    after = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t ORDER BY d LIMIT 1")
+    db.shutdown()
+    check("a transaction sees its own vector changes",
+          inside.get("rows") == [[1, 0.0]], repr(inside.get("rows")))
+    check("a rollback restores the previous vectors",
+          after.get("rows") == [[1, 10.0]], repr(after.get("rows")))
+
+
+def test_transaction_vector_visibility_ann(binary, tmp):
+    """The same in the approximate mode.  The table has enough rows for
+    several clusters, so a row whose cluster changed during the transaction
+    really is looked for in the wrong cluster after the rollback."""
+    data = tmp / "txnvecann"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR(2))")
+    vals = ",".join(f"({i}, '[{i * 10}.0,{(i % 7) * 10}.0]')" for i in range(1, 41))
+    db.request(f"INSERT INTO t VALUES {vals}")
+    db.request("CREATE VECTOR INDEX t_vec ON t(e)")
+    db.request("BEGIN")
+    db.request("UPDATE t SET e = '[0,0]' WHERE id = 1")
+    inside = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t "
+                        "ORDER BY d LIMIT 1", "ann")
+    db.request("ROLLBACK")
+    after = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t "
+                       "ORDER BY d LIMIT 5", "ann")
+    truth = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t "
+                       "ORDER BY d LIMIT 5")
+    db.shutdown()
+    check("the approximate mode sees the vector change of a transaction",
+          inside.get("rows") == [[1, 0.0]], repr(inside.get("rows")))
+    ann_ids = [row[0] for row in after.get("rows", [])]
+    exact_ids = [row[0] for row in truth.get("rows", [])]
+    check("the approximate mode finds the same rows after a rollback",
+          ann_ids == exact_ids, f"ann={ann_ids} exact={exact_ids}")
+
+
 def test_unsupported_statements(binary, tmp):
     """Unsupported statements fail but never kill the process."""
     data = tmp / "unsupported"
@@ -368,6 +417,8 @@ def main() -> int:
         test_duplicate_in_one_statement(binary, tmp)
         test_ties_and_order(binary, tmp)
         test_transaction_isolation(binary, tmp)
+        test_transaction_vector_visibility(binary, tmp)
+        test_transaction_vector_visibility_ann(binary, tmp)
         test_unsupported_statements(binary, tmp)
         test_ordering_of_plain_columns(binary, tmp)
         test_varchar_length(binary, tmp)

@@ -32,9 +32,10 @@ docker run -i --network=none --cpus=2 --memory=2g --read-only \
 - 日志与调试信息全部写 stderr，stdout 只有协议报文；
 - 收到 `{"op":"shutdown"}` 后回一行 `{"id":N,"ok":true}` 并以退出码 0 结束。
 
-数据目录的取址顺序：`--data-dir` 参数 > `/data` > 环境变量 `VECTORDB_DATA_DIR` > `./data`。
+数据目录的取址顺序：`--data-dir` 参数 > 环境变量 `VECTORDB_DATA_DIR`（且该路径确实存在）
+> `/data`（存在时）> `./data`。
 （评测驱动会把 `VECTORDB_DATA_DIR` 指向宿主临时目录，该路径在容器内并不存在，
-因此容器里实际使用的是 `/data`。）
+因此容器里实际使用的是 `/data`；镜像的 ENTRYPOINT 也显式传了 `--data-dir /data`。）
 
 ## 4. 数据目录
 
