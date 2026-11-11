@@ -12,7 +12,7 @@ SRC := $(wildcard src/*.c)
 HDR := src/mvdb.h
 BIN := minivectordb
 
-.PHONY: all clean test cases official handshake edge crash bench recall asan material
+.PHONY: all clean test cases official handshake spec edge crash bench recall asan material
 
 all: $(BIN)
 
@@ -34,6 +34,10 @@ official: $(BIN)
 handshake: $(BIN)
 	python3 protocol_check/run.py --command '["$(CURDIR)/$(BIN)","--data-dir","{data_dir}"]' \
 	    --handshake-only --output "protocol-results/handshake-$$(date +%Y%m%d-%H%M%S)"
+
+# The acceptance check of the protocol specification.
+spec: $(BIN)
+	python3 tests/spec_check.py --binary ./$(BIN)
 
 # The edge cases that the public package does not cover.
 edge: $(BIN)

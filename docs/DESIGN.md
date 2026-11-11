@@ -200,6 +200,7 @@ gcc -std=gnu11 -O3 -o minivectordb src/*.c -lm
 make                 # 编译
 make official        # 题包自带的 protocol_check/run.py 跑全部公开用例（判题器同款断言）
 make handshake       # 只检查 ready 握手与 shutdown
+make spec            # STDIO_PROTOCOL.md 第 7 节的逐字节验收（5 行输出、退出码 0）
 make cases           # 自研驱动跑公开题包 20 个用例（不需要 docker）
 make edge            # 公开包未覆盖的语义 12 项
 make crash           # 强杀/恢复/原子性 6 项
@@ -208,8 +209,10 @@ make recall          # 近似模式召回率
 make asan            # 同一批用例在 ASan/UBSan 下重跑
 ```
 
-公开题包 20 个用例在**题包自带的官方驱动**（`protocol_check/run.py`，断言语义与判题器一致）
-下同样全部通过，握手专项检查也通过。
+公开题包 20 个用例在**题包自带的官方驱动**（`protocol_check/run.py`，断言论义与判题器一致）
+下同样全部通过，握手专项检查也通过；`STDIO_PROTOCOL.md` 第 7 节给出的逐字节验收脚本
+（5 行输出、ready 对象精确匹配、id 类型一致、affected_rows 为整数、中文原样往返、退出码 0）
+也已固化在 `tests/spec_check.py` 里。
 
 `tests/run_cases.py` 是自研的回归驱动，直接按 `STDIO_PROTOCOL.md` 与 `mysqltest/`
 的断言语义（`affected_rows`、`columns`、`rows`、浮点容差 1e-5）比对，
