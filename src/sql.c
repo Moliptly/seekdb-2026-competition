@@ -535,6 +535,10 @@ static bool parse_create_table(parser *ps, stmt *st) {
       next_token(ps);
       if (!expect_tok(ps, T_LPAREN, "'('")) return false;
       if (ps->cur.kind != T_INT) { perr(ps, "expected a VARCHAR length"); return false; }
+      if (ps->cur.ival < 0 || ps->cur.ival > 65535) {
+        perr(ps, "the VARCHAR length is out of range");
+        return false;
+      }
       col->vlen = (int)ps->cur.ival;
       next_token(ps);
       if (!expect_tok(ps, T_RPAREN, "')'")) return false;
@@ -543,6 +547,10 @@ static bool parse_create_table(parser *ps, stmt *st) {
       next_token(ps);
       if (!expect_tok(ps, T_LPAREN, "'('")) return false;
       if (ps->cur.kind != T_INT) { perr(ps, "expected a VECTOR dimension"); return false; }
+      if (ps->cur.ival <= 0 || ps->cur.ival > 65535) {
+        perr(ps, "the vector dimension is out of range");
+        return false;
+      }
       col->dim = (int)ps->cur.ival;
       next_token(ps);
       if (!expect_tok(ps, T_RPAREN, "')'")) return false;

@@ -153,12 +153,9 @@ static void emit_slot(outbuf *body, table_t *t, stmt *st, int k, uint64_t rowid)
   }
   expr *e = &st->items[k];
   if (e->kind == EX_L2) {
-    float buf[4096];
-    if (table_row_vector(t, e->col, rowid, buf)) {
-      ob_json_double(body, vec_l2(buf, e->vec, t->dim));
-    } else {
-      ob_json_double(body, 0.0);
-    }
+    const float *v = table_row_vector(t, e->col, rowid);
+    if (v) ob_json_double(body, vec_l2(v, e->vec, t->dim));
+    else ob_json_double(body, 0.0);
     return;
   }
   if (t->cols[e->col].type == CT_BIGINT) {
@@ -322,6 +319,7 @@ static bool exec_insert(exectx *c, stmt *st) {
     for (int i = 0; i < st->nicols; i++) {
       int col = find_column(t, st->icolnames[i]);
       if (col < 0) return fail(c, "no_such_column", "unknown column '%s'", st->icolnames[i]);
+      if (nmap >= 16) return fail(c, "unsupported_sql", "too many columns in the value list");
       map[nmap++] = col;
     }
   } else {

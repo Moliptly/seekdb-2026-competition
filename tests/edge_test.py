@@ -186,6 +186,28 @@ def test_varchar_length(binary, tmp):
     check("varchar keeps the unicode content", got == ["中文abc", "é", ""], repr(got))
 
 
+def test_large_dimension(binary, tmp):
+    """A vector column with more than 1024 dimensions must work."""
+    import random
+    data = tmp / "bigdim"
+    dim = 2048
+    rng = random.Random(5)
+    vec = [rng.uniform(-1, 1) for _ in range(dim)]
+    q = [0.0] * dim
+    q[0] = vec[0]
+    db = Database(binary, data)
+    db.start()
+    db.request(f"CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR({dim}))")
+    r1 = db.request(f"INSERT INTO t VALUES (1, '[{','.join(f'{v:.5f}' for v in vec)}]')")
+    r2 = db.request(f"SELECT id, L2_DISTANCE(e, '[{','.join(f'{v:.5f}' for v in q)}]') AS d "
+                    f"FROM t")
+    db.shutdown()
+    ok = r1.get("ok") is True and r2.get("ok") is True
+    ok2 = len(r2.get("rows", [[0, 0]])[0]) == 2
+    check("a vector column with 2048 dimensions works", ok and ok2,
+          f"insert={r1.get('ok')} rows={r2.get('rows')}")
+
+
 def test_large_table_fallback(binary, tmp):
     """A table whose vectors exceed the memory budget still answers queries.
 
@@ -250,6 +272,7 @@ def main() -> int:
         test_ordering_of_plain_columns(binary, tmp)
         test_varchar_length(binary, tmp)
         test_large_table_fallback(binary, tmp)
+        test_large_dimension(binary, tmp)
     finally:
         if args.keep:
             print(f"kept {tmp}")

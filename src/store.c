@@ -283,15 +283,17 @@ bool table_pool_read(table_t *t, uint64_t slot, float *dst) {
 }
 
 /* Returns the vector of a row, from the memory cache or from the pool. */
-bool table_row_vector(table_t *t, int vcol, uint64_t rowid, float *dst) {
-  if (vcol < 0 || vcol >= t->ncols) return false;
+float *table_row_vector(table_t *t, int vcol, uint64_t rowid) {
+  if (vcol < 0 || vcol >= t->ncols) return NULL;
   const float *v = t->vecs[vcol] ? t->vecs[vcol][rowid] : NULL;
-  if (v) {
-    memcpy(dst, v, (size_t)t->dim * sizeof(float));
-    return true;
+  if (v) return (float *)v;
+  if (rowid >= t->nrows) return NULL;
+  if (!t->vec_buf) {
+    t->vec_buf = (float *)malloc((size_t)t->dim * sizeof(float));
+    if (!t->vec_buf) return NULL;
   }
-  if (rowid >= t->nrows) return false;
-  return table_pool_read(t, t->vec_slot[rowid], dst);
+  if (!table_pool_read(t, t->vec_slot[rowid], t->vec_buf)) return NULL;
+  return t->vec_buf;
 }
 
 /* The parameters of a scan, shared by the workers. */
@@ -311,14 +313,14 @@ static size_t scan_range_run(void *ctxv, size_t begin, size_t end, dres_t *out, 
   scan_ctx_t *ctx = (scan_ctx_t *)ctxv;
   if (ctx->table) {
     /* the vectors are not cached in memory: they come from the payload pool */
-    float buf[4096];
     size_t m = 0;
     for (size_t i = begin; i < end && m < cap; i++) {
       uint64_t r = ctx->rows ? ctx->rows[i] : (ctx->row_begin + i);
       if (ctx->alive && !ctx->alive[r]) continue;
-      if (!table_row_vector(ctx->table, ctx->vcol, r, buf)) continue;
+      const float *v = table_row_vector(ctx->table, ctx->vcol, r);
+      if (!v) continue;
       out[m].rowid = r;
-      out[m].sq = vec_l2_sq(buf, ctx->q, ctx->dim);
+      out[m].sq = vec_l2_sq(v, ctx->q, ctx->dim);
       m++;
     }
     return m;
@@ -538,39 +540,43 @@ void txn_rollback(db_t *db) {
 
 /* Serialises one row (metadata only, vectors live in the payload file). */
 static bool log_row_frame(db_t *db, table_t *t, uint64_t rowid, uint8_t kind) {
-  outbuf b;
-  ob_init(&b);
-  put_u64(&b, db->txn_id);
-  put_u64(&b, t->id);
-  put_u64(&b, rowid);
+  /* the buffer is reused across the rows of a transaction: one allocation per
+   * row would show up in the profile of the write path */
+  outbuf *bp = &db->frame_buf;
+  ob_free(bp);
+  ob_init(bp);
+  outbuf *b = bp;
+  put_u64(b, db->txn_id);
+  put_u64(b, t->id);
+  put_u64(b, rowid);
   if (kind == 2) {
-    bool ok = !b.oom && log_append(db, b.data ? b.data : "", b.len, LOG_DELETE_ROW);
-    ob_free(&b);
+    bool ok = !b->oom && log_append(db, b->data ? b->data : "", b->len, LOG_DELETE_ROW);
+    ob_free(bp);
     return ok;
   }
-  put_i64(&b, (int64_t)t->pk[rowid]);
-  if (t->vec_idx >= 0) put_u64(&b, t->vec_slot[rowid]);
+  put_i64(b, (int64_t)t->pk[rowid]);
+  if (t->vec_idx >= 0) put_u64(b, t->vec_slot[rowid]);
   uint16_t ncols = 0;
   for (int c = 0; c < t->ncols; c++) {
     if (t->cols[c].type == CT_VECTOR) continue;
     ncols++;
   }
-  put_u16(&b, ncols);
+  put_u16(b, ncols);
   for (int c = 0; c < t->ncols; c++) {
     if (t->cols[c].type == CT_VECTOR) continue;
-    put_u8(&b, (uint8_t)t->cols[c].type);
+    put_u8(b, (uint8_t)t->cols[c].type);
     if (t->cols[c].type == CT_BIGINT) {
-      put_i64(&b, t->ints[c][rowid]);
+      put_i64(b, t->ints[c][rowid]);
     } else {
       uint32_t len = t->strlens[c][rowid];
-      put_u32(&b, len);
-      if (len) ob_putn(&b, t->strs[c][rowid], len);
+      put_u32(b, len);
+      if (len) ob_putn(b, t->strs[c][rowid], len);
     }
   }
-  bool ok = !b.oom &&
-            log_append(db, b.data ? b.data : "", b.len,
+  bool ok = !b->oom &&
+            log_append(db, b->data ? b->data : "", b->len,
                        kind == 0 ? LOG_INSERT_ROW : LOG_UPDATE_ROW);
-  ob_free(&b);
+  ob_free(bp);
   return ok;
 }
 
