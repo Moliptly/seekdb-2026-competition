@@ -153,15 +153,16 @@ def test_crash_during_recovery(binary: str, tmp: Path):
     db = Database(binary, data)
     db.start()
     db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(16))")
-    for i in range(200):
+    for i in range(20000):
         db.request(f"INSERT INTO t VALUES ({i}, 'value-{i}')")
     db.kill()
 
-    # start and kill it immediately, repeatedly, while it recovers
+    # start and kill it immediately, repeatedly, while it recovers.  The table
+    # is big enough that the recovery takes long enough to be interrupted.
     for _ in range(5):
         db = Database(binary, data)
         db.start()
-        time.sleep(0.002)
+        time.sleep(0.001)
         db.kill()
 
     db = Database(binary, data)
@@ -169,8 +170,8 @@ def test_crash_during_recovery(binary: str, tmp: Path):
     resp = db.request("SELECT id, v FROM t ORDER BY id")
     db.shutdown()
     rows = rows_of(resp)
-    ok = resp.get("ok") is True and len(rows) == 200 and rows[0] == [0, "value-0"] \
-        and rows[-1] == [199, "value-199"]
+    ok = resp.get("ok") is True and len(rows) == 20000 and rows[0] == [0, "value-0"] \
+        and rows[-1] == [19999, "value-19999"]
     check("recovery survives repeated crashes", ok,
           f"{len(rows)} rows, first={rows[0] if rows else None}")
 
