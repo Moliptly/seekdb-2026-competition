@@ -223,6 +223,7 @@ make edge            # 公开包未覆盖的语义 14 项
 make crash           # 强杀/恢复/原子性 6 项
 make bench           # 性能基准
 make recall          # 近似模式召回率
+make fuzz            # 近似/精确对拍、暴力真值对拍、索引维护一致性
 make asan            # 同一批用例在 ASan/UBSan 下重跑
 ```
 

@@ -56,6 +56,14 @@ bench: $(BIN)
 recall: $(BIN)
 	python3 tests/recall.py --binary ./$(BIN)
 
+# The approximate mode has to agree with the exact one, the index has to
+# follow the records of the table and the vector search has to match a brute
+# force truth.
+fuzz: $(BIN)
+	python3 tests/ann_fuzz.py --binary ./$(BIN) --rounds 120 --large 12000
+	python3 tests/topk_fuzz.py --binary ./$(BIN) --rounds 120
+	python3 tests/index_maintenance_test.py --binary ./$(BIN)
+
 # The same tests with the address and undefined behaviour sanitizers.
 asan: $(SRC) $(HDR)
 	$(CC) -std=gnu11 -O1 -g -fsanitize=address,undefined \

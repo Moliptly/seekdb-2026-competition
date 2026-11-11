@@ -173,6 +173,7 @@ make crash      # 强杀 / 恢复 / 原子性
 make bench      # 性能基准
 make recall     # 近似模式召回率
 make spec       # STDIO_PROTOCOL.md 第 7 节的逐字节验收
+make fuzz       # 近似/精确对拍、暴力真值对拍、索引维护一致性
 ```
 
 题包自带的驱动也可以直接跑本地程序（`--command` 模式，不需要 docker，
