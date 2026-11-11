@@ -384,6 +384,10 @@ float vec_l2_sq(const float *a, const float *b, int dim);
  * all the rows of the table; dead rows are skipped. */
 size_t vec_scan_sq(const float *const *vecs, const uint8_t *alive, const uint64_t *rows,
                    size_t nrows, const float *q, int dim, dres_t *out);
+size_t vec_scan_sq_range(const float *const *vecs, const uint8_t *alive, const uint64_t *rows,
+                         size_t nrows, uint64_t row_begin, uint64_t row_end, const float *q,
+                         int dim, dres_t *out);
+
 void vec_l2_batch(const float *base, int dim, const float *q, int n, float *out);
 
 /* Parses "[1,2,3]" into float32.  Rejects NaN/Inf/out-of-range values.

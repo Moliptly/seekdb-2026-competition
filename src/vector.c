@@ -3,6 +3,7 @@
 #include "mvdb.h"
 
 #include <math.h>
+#include <pthread.h>
 
 #if defined(__x86_64__)
 #include <immintrin.h>
@@ -86,15 +87,16 @@ __attribute__((target("avx2,fma"))) static float l2_sq_avx2(const float *a, cons
 __attribute__((target("avx2,fma"))) static size_t scan_sq_avx2(const float *const *vecs,
                                                                const uint8_t *alive,
                                                                const uint64_t *rows, size_t nrows,
+                                                               uint64_t row_begin, uint64_t row_end,
                                                                const float *q, int dim, dres_t *out) {
   size_t m = 0;
   for (size_t i = 0; i < nrows; i++) {
     if (i + MVDB_PREFETCH < nrows) {
-      uint64_t rn = rows ? rows[i + MVDB_PREFETCH] : (uint64_t)(i + MVDB_PREFETCH);
+      uint64_t rn = rows ? rows[i + MVDB_PREFETCH] : (row_begin + i + MVDB_PREFETCH);
       const float *vn = vecs[rn];
       if (vn) __builtin_prefetch(vn, 0, 1);
     }
-    uint64_t r = rows ? rows[i] : (uint64_t)i;
+    uint64_t r = rows ? rows[i] : (row_begin + i);
     if (alive && !alive[r]) continue;
     const float *v = vecs[r];
     if (!v) continue;
@@ -116,16 +118,16 @@ static float l2_sq_scalar(const float *a, const float *b, int dim) {
 }
 
 static size_t scan_sq_scalar(const float *const *vecs, const uint8_t *alive,
-                             const uint64_t *rows, size_t nrows, const float *q, int dim,
-                             dres_t *out) {
+                             const uint64_t *rows, size_t nrows, uint64_t row_begin,
+                             uint64_t row_end, const float *q, int dim, dres_t *out) {
   size_t m = 0;
   for (size_t i = 0; i < nrows; i++) {
     if (i + MVDB_PREFETCH < nrows) {
-      uint64_t rn = rows ? rows[i + MVDB_PREFETCH] : (uint64_t)(i + MVDB_PREFETCH);
+      uint64_t rn = rows ? rows[i + MVDB_PREFETCH] : (row_begin + i + MVDB_PREFETCH);
       const float *vn = vecs[rn];
       if (vn) __builtin_prefetch(vn, 0, 1);
     }
-    uint64_t r = rows ? rows[i] : (uint64_t)i;
+    uint64_t r = rows ? rows[i] : (row_begin + i);
     if (alive && !alive[r]) continue;
     const float *v = vecs[r];
     if (!v) continue;
@@ -143,10 +145,16 @@ float vec_l2_sq(const float *a, const float *b, int dim) {
   return l2_sq_scalar(a, b, dim);
 }
 
+size_t vec_scan_sq_range(const float *const *vecs, const uint8_t *alive, const uint64_t *rows,
+                         size_t nrows, uint64_t row_begin, uint64_t row_end, const float *q,
+                         int dim, dres_t *out) {
+#if defined(__x86_64__)
+  if (have_avx2) return scan_sq_avx2(vecs, alive, rows, nrows, row_begin, row_end, q, dim, out);
+#endif
+  return scan_sq_scalar(vecs, alive, rows, nrows, row_begin, row_end, q, dim, out);
+}
+
 size_t vec_scan_sq(const float *const *vecs, const uint8_t *alive, const uint64_t *rows,
                    size_t nrows, const float *q, int dim, dres_t *out) {
-#if defined(__x86_64__)
-  if (have_avx2) return scan_sq_avx2(vecs, alive, rows, nrows, q, dim, out);
-#endif
-  return scan_sq_scalar(vecs, alive, rows, nrows, q, dim, out);
+  return vec_scan_sq_range(vecs, alive, rows, nrows, 0, nrows, q, dim, out);
 }
