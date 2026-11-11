@@ -76,6 +76,7 @@ void ob_printf(outbuf *b, const char *fmt, ...);
 void ob_json_string(outbuf *b, const char *s, size_t n);
 void ob_json_int(outbuf *b, int64_t v);
 void ob_json_double(outbuf *b, double v);
+void ob_json_float(outbuf *b, float v);
 void ob_json_null(outbuf *b);
 
 /* ------------------------------------------------------------------- sql */

@@ -175,6 +175,19 @@ void ob_json_double(outbuf *b, double v) {
   if (!has) ob_puts(b, ".0");
 }
 
+/* A float32 value: nine significant digits reproduce it exactly. */
+void ob_json_float(outbuf *b, float v) {
+  if (!isfinite(v)) { ob_puts(b, "null"); return; }
+  char tmp[32];
+  snprintf(tmp, sizeof(tmp), "%.9g", (double)v);
+  bool has = false;
+  for (char *p = tmp; *p; p++) {
+    if (*p == '.' || *p == 'e' || *p == 'E') { has = true; break; }
+  }
+  ob_puts(b, tmp);
+  if (!has) ob_puts(b, ".0");
+}
+
 void ob_json_null(outbuf *b) { ob_puts(b, "null"); }
 
 /* ------------------------------------------------------------------- json */

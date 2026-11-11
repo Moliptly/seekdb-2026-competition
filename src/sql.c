@@ -80,7 +80,17 @@ static void lex_string(parser *ps, char quote) {
   ps->p++;
   outbuf b;
   ob_init(&b);
-  while (ps->p < ps->end && *ps->p != quote) {
+  while (ps->p < ps->end) {
+    if (*ps->p == quote) {
+      /* A doubled quote is an escaped quote inside the literal, the literal
+       * only ends at a quote that is not doubled. */
+      if (ps->p + 1 < ps->end && ps->p[1] == quote) {
+        ob_putc(&b, quote);
+        ps->p += 2;
+        continue;
+      }
+      break;
+    }
     if (*ps->p == '\\' && ps->p + 1 < ps->end) {
       ps->p++;
       char e = *ps->p++;
@@ -94,11 +104,6 @@ static void lex_string(parser *ps, char quote) {
         case '"': ob_putc(&b, '"'); break;
         default: ob_putc(&b, e); break;
       }
-      continue;
-    }
-    if (*ps->p == quote && ps->p + 1 < ps->end && ps->p[1] == quote) {
-      ob_putc(&b, quote);
-      ps->p += 2;
       continue;
     }
     ob_putc(&b, *ps->p++);

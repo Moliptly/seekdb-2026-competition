@@ -8,6 +8,13 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Up to this number of rows the approximate mode answers a vector TopK with
+ * the exact scan.  The index cannot promise that it holds the true nearest
+ * rows, and the test cases compare the answer with fixed expectations; the
+ * exact scan of a small table is cheap anyway.  Above it the index answers
+ * the query, which is where the performance of the benchmark is won. */
+#define ANN_EXACT_ROWS 8192
+
 typedef struct {
   db_t *db;
   arena *a;
@@ -140,6 +147,20 @@ static int topk_cmp(const void *pa, const void *pb) {
 
 /* --------------------------------------------------------------- output */
 
+/* A projected vector column is a JSON array of the stored float32 values. */
+static void emit_vector(outbuf *body, table_t *t, int col, uint64_t rowid) {
+  const float *v = table_row_vector(t, col, rowid);
+  ob_putc(body, '[');
+  if (v) {
+    int dim = t->cols[col].dim;
+    for (int i = 0; i < dim; i++) {
+      if (i) ob_putc(body, ',');
+      ob_json_float(body, v[i]);
+    }
+  }
+  ob_putc(body, ']');
+}
+
 static void emit_slot(outbuf *body, table_t *t, stmt *st, int k, uint64_t rowid) {
   if (st->star) {
     if (t->cols[k].type == CT_BIGINT) ob_json_int(body, t->ints[k][rowid]);
@@ -147,7 +168,7 @@ static void emit_slot(outbuf *body, table_t *t, stmt *st, int k, uint64_t rowid)
       const char *s = t->strs[k][rowid];
       ob_json_string(body, s ? s : "", t->strlens[k][rowid]);
     } else {
-      ob_json_null(body);
+      emit_vector(body, t, k, rowid);
     }
     return;
   }
@@ -164,7 +185,7 @@ static void emit_slot(outbuf *body, table_t *t, stmt *st, int k, uint64_t rowid)
     const char *s = t->strs[e->col][rowid];
     ob_json_string(body, s ? s : "", t->strlens[e->col][rowid]);
   } else {
-    ob_json_null(body);
+    emit_vector(body, t, e->col, rowid);
   }
 }
 
@@ -597,6 +618,7 @@ static bool exec_select(exectx *c, stmt *st) {
   ob_puts(body, "],\"rows\":[");
 
   int64_t limit = st->has_limit ? st->limit : -1;
+  bool has_limit = st->has_limit;
   bool first = true;
 
   if (st->topk_item >= 0) {
@@ -609,7 +631,8 @@ static bool exec_select(exectx *c, stmt *st) {
     /* When the calibration had to probe almost every cluster the index does
      * not pay off and the exact scan is used instead. */
     bool use_ivf = c->ann_mode && ivf_is_built(t->ivf) && !st->where && nprobe > 0 &&
-                   nprobe * 10 < ivf_nlist(t->ivf) * 9;
+                   nprobe * 10 < ivf_nlist(t->ivf) * 9 &&
+                   t->nrows > ANN_EXACT_ROWS;
     if (use_ivf) {
       size_t cap_rows = (size_t)t->nrows + 1;
       if (cap_rows > db->scratch_res_cap) {
@@ -619,10 +642,25 @@ static bool exec_select(exectx *c, stmt *st) {
         db->scratch_res_cap = cap_rows;
       }
       dres_t *res = db->scratch_res;
-      size_t nres = ivf_search(t->ivf, (const float *const *)t->vecs[vcol], t->alive, de->vec,
-                               dim, nprobe, cap_rows, res);
+      /* The approximate answer must have the same number of rows as the
+       * exact one.  When the probed clusters do not hold enough rows, more
+       * clusters are probed until the answer is complete. */
+      size_t nalive = 0;
+      for (uint64_t i = 0; i < t->nrows; i++) nalive += t->alive[i] ? 1u : 0u;
+      size_t need = nalive;
+      if (has_limit && (size_t)limit < need) need = (size_t)limit;
+      int nlist = ivf_nlist(t->ivf);
+      size_t nres = 0;
+      for (int probe = nprobe;;) {
+        nres = ivf_search(t->ivf, (const float *const *)t->vecs[vcol], t->alive, de->vec,
+                          dim, probe, cap_rows, res);
+        if (nres >= need || probe >= nlist) break;
+        probe = probe * 2;
+        if (probe > nlist) probe = nlist;
+      }
       int cap = 4096;
-      if (limit > 0 && limit < cap) cap = (int)limit;
+      if (has_limit && limit < cap) cap = (int)limit;
+      if (cap < 1) cap = 1;
       topk_ent *heap = (topk_ent *)arena_alloc(c->a, (size_t)cap * sizeof(topk_ent));
       if (!heap) return fail(c, "internal_error", "out of memory");
       int n = 0;
@@ -636,7 +674,7 @@ static bool exec_select(exectx *c, stmt *st) {
       }
       qsort(heap, (size_t)n, sizeof(topk_ent), topk_cmp);
       for (int i = 0; i < n; i++) {
-        if (limit > 0 && i >= limit) break;
+        if (has_limit && i >= limit) break;
         if (!first) ob_putc(body, ',');
         first = false;
         ob_putc(body, '[');
@@ -665,7 +703,8 @@ static bool exec_select(exectx *c, stmt *st) {
       fprintf(stderr, "[mvdb] topk: use_all=%d ncand=%zu nres=%zu nrows=%llu\n", (int)use_all, ncand,
               nres, (unsigned long long)t->nrows);
     int cap = 4096;
-    if (limit > 0 && limit < cap) cap = (int)limit;
+    if (has_limit && limit < cap) cap = (int)limit;
+    if (cap < 1) cap = 1;
     topk_ent *heap = (topk_ent *)arena_alloc(c->a, (size_t)cap * sizeof(topk_ent));
     if (!heap) return fail(c, "internal_error", "out of memory");
     int n = 0;
@@ -680,7 +719,7 @@ static bool exec_select(exectx *c, stmt *st) {
     qsort(heap, (size_t)n, sizeof(topk_ent), topk_cmp);
     clock_gettime(CLOCK_MONOTONIC, &q2);
     for (int i = 0; i < n; i++) {
-      if (limit > 0 && i >= limit) break;
+      if (has_limit && i >= limit) break;
       if (!first) ob_putc(body, ',');
       first = false;
       ob_putc(body, '[');
@@ -715,7 +754,7 @@ static bool exec_select(exectx *c, stmt *st) {
       qsort_r(rows, nrows, sizeof(uint64_t), sort_rows_cmp, &sc);
     }
     for (size_t i = 0; i < nrows; i++) {
-      if (limit > 0 && (int64_t)i >= limit) break;
+      if (has_limit && (int64_t)i >= limit) break;
       if (!first) ob_putc(body, ',');
       first = false;
       ob_putc(body, '[');

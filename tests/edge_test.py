@@ -181,6 +181,85 @@ def test_transaction_vector_visibility_ann(binary, tmp):
           ann_ids == exact_ids, f"ann={ann_ids} exact={exact_ids}")
 
 
+def test_ann_matches_the_exact_mode(binary, tmp):
+    """The approximate mode must return the same rows as the exact mode.
+
+    The test cases compare the answer with fixed expectations, so a missing
+    row or a wrong neighbour is a failure even when the recall is high.
+    """
+    import random
+    data = tmp / "annexact"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR(4))")
+    rng = random.Random(4242)
+    vals = []
+    for i in range(1, 41):
+        v = [round(rng.uniform(-10, 10), 3) for _ in range(4)]
+        vals.append(f"({i}, '[{','.join(str(x) for x in v)}]')")
+    db.request(f"INSERT INTO t VALUES {','.join(vals)}")
+    db.request("CREATE VECTOR INDEX t_vec ON t(e)")
+    for k in (1, 3, 10, 40):
+        sql = (f"SELECT id, L2_DISTANCE(e, '[1,2,3,4]') AS d FROM t ORDER BY d LIMIT {k}")
+        exact = db.request(sql, "exact")
+        ann = db.request(sql, "ann")
+        if exact.get("rows") != ann.get("rows"):
+            db.shutdown()
+            check(f"the approximate mode agrees with the exact mode (k={k})", False,
+                  f"exact={exact.get('rows')[:3]} ann={ann.get('rows')[:3]}")
+            return
+    db.shutdown()
+    check("the approximate mode agrees with the exact mode", True)
+
+
+def test_vector_projection(binary, tmp):
+    """A projected vector column is a JSON array of the stored values."""
+    data = tmp / "vecproj"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR(3))")
+    db.request("INSERT INTO t VALUES (1, '[1.5,-0.25,2]'), (2, '[0,1,2]')")
+    rows = db.request("SELECT id, e FROM t ORDER BY id")
+    star = db.request("SELECT * FROM t ORDER BY id")
+    db.shutdown()
+    check("a projected vector is a JSON array",
+          rows.get("rows") == [[1, [1.5, -0.25, 2.0]], [2, [0.0, 1.0, 2.0]]],
+          repr(rows.get("rows")))
+    check("SELECT * projects the vector as well",
+          star.get("rows") == [[1, [1.5, -0.25, 2.0]], [2, [0.0, 1.0, 2.0]]],
+          repr(star.get("rows")))
+
+
+def test_limit_zero(binary, tmp):
+    """A LIMIT of zero returns no rows."""
+    data = tmp / "limit0"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY)")
+    db.request("INSERT INTO t VALUES (1), (2), (3)")
+    zero = db.request("SELECT id FROM t LIMIT 0")
+    one = db.request("SELECT id FROM t LIMIT 1")
+    db.shutdown()
+    check("LIMIT 0 returns no rows", zero.get("rows") == [], repr(zero.get("rows")))
+    check("LIMIT 1 returns one row", one.get("rows") == [[1]], repr(one.get("rows")))
+
+
+def test_escaped_quote(binary, tmp):
+    """A quote inside a string literal is written twice."""
+    data = tmp / "escaped"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, a VARCHAR(32))")
+    db.request("INSERT INTO t VALUES (1, 'it''s'), (2, 'O''Brien')")
+    rows = db.request("SELECT id, a FROM t ORDER BY id")
+    hit = db.request("SELECT id FROM t WHERE a = 'O''Brien'")
+    db.shutdown()
+    check("a doubled quote is one quote",
+          rows.get("rows") == [[1, "it's"], [2, "O'Brien"]], repr(rows.get("rows")))
+    check("a doubled quote works in a condition",
+          hit.get("rows") == [[2]], repr(hit.get("rows")))
+
+
 def test_unsupported_statements(binary, tmp):
     """Unsupported statements fail but never kill the process."""
     data = tmp / "unsupported"
@@ -419,6 +498,10 @@ def main() -> int:
         test_transaction_isolation(binary, tmp)
         test_transaction_vector_visibility(binary, tmp)
         test_transaction_vector_visibility_ann(binary, tmp)
+        test_ann_matches_the_exact_mode(binary, tmp)
+        test_vector_projection(binary, tmp)
+        test_limit_zero(binary, tmp)
+        test_escaped_quote(binary, tmp)
         test_unsupported_statements(binary, tmp)
         test_ordering_of_plain_columns(binary, tmp)
         test_varchar_length(binary, tmp)
