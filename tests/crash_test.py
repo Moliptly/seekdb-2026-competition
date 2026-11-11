@@ -39,6 +39,60 @@ def rows_of(resp):
     return resp.get("rows", [])
 
 
+def test_batches_survive(binary: str, tmp: Path):
+    """Every committed batch of a bulk load is there after SIGKILL."""
+    data = tmp / "batches"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(8))")
+    for batch in range(5):
+        values = ",".join(f"({batch * 100 + i}, 'v{i}')" for i in range(100))
+        db.request(f"INSERT INTO t VALUES {values}")
+    db.kill()
+
+    db = Database(binary, data)
+    db.start()
+    resp = db.request("SELECT id FROM t ORDER BY id")
+    db.shutdown()
+    ids = [r[0] for r in rows_of(resp)]
+    ok = resp.get("ok") is True and ids == list(range(500))
+    check("every committed batch survives SIGKILL", ok,
+          f"{len(ids)} rows, first={ids[:3]} last={ids[-3:]}")
+
+
+def test_crash_during_a_statement(binary: str, tmp: Path):
+    """A statement that was still running is not applied partially."""
+    import threading
+    data = tmp / "during"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(8))")
+    values = ",".join(f"({i}, 'v{i}')" for i in range(1, 20001))
+    db.request("INSERT INTO t VALUES (1, 'first')")
+
+    def writer():
+        try:
+            db.request(f"INSERT INTO t VALUES {values}")
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=writer, daemon=True)
+    thread.start()
+    time.sleep(0.02)
+    db.kill()
+    thread.join(timeout=5)
+
+    db = Database(binary, data)
+    db.start()
+    resp = db.request("SELECT id FROM t ORDER BY id")
+    db.shutdown()
+    ids = [r[0] for r in rows_of(resp)]
+    # the batch is either completely there or completely absent
+    ok = ids in ([1], list(range(1, 20002)))
+    check("a statement interrupted by SIGKILL is not applied partially", ok,
+          f"{len(ids)} rows")
+
+
 def test_committed_survives(binary: str, tmp: Path):
     """A committed insert is still there after SIGKILL."""
     data = tmp / "committed"
@@ -112,17 +166,13 @@ def test_crash_during_recovery(binary: str, tmp: Path):
 
     db = Database(binary, data)
     db.start()
-    resp = db.request("SELECT COUNT(*) FROM t")
+    resp = db.request("SELECT id, v FROM t ORDER BY id")
     db.shutdown()
-    # the statement may be unsupported (COUNT is not in the subset) - fall back
-    ok = True
-    detail = "recovered"
-    if resp.get("ok"):
-        ok = rows_of(resp) == [[200]]
-        detail = json.dumps(rows_of(resp))
-    else:
-        detail = f"note: {resp.get('error', {}).get('code')}"
-    check("recovery survives repeated crashes", ok, detail)
+    rows = rows_of(resp)
+    ok = resp.get("ok") is True and len(rows) == 200 and rows[0] == [0, "value-0"] \
+        and rows[-1] == [199, "value-199"]
+    check("recovery survives repeated crashes", ok,
+          f"{len(rows)} rows, first={rows[0] if rows else None}")
 
 
 def test_commit_reply_lost(binary: str, tmp: Path):
@@ -171,6 +221,8 @@ def main() -> int:
     binary = str(Path(args.binary).resolve())
     tmp = Path(tempfile.mkdtemp(prefix="mvdb-crash-"))
     try:
+        test_batches_survive(binary, tmp)
+        test_crash_during_a_statement(binary, tmp)
         test_committed_survives(binary, tmp)
         test_uncommitted_is_lost(binary, tmp)
         test_no_partial_statement(binary, tmp)
