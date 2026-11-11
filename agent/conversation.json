@@ -104,6 +104,16 @@
       "content": "容器给 2 核，直觉上扫描可以拆成两半并行。但写个微基准才发现瓶颈不在核而在内存带宽：线程数从 1 加到 8，吞吐几乎不变。既然并行化没有收益，就把它撤掉——用更少的活动部件换掉一个测不出来的收益，不划算。"
     },
     {
+      "id": "c17",
+      "role": "student",
+      "content": "公开用例全绿不等于没问题。题包 README 里写着「ANN 必须满足过滤、有效 ID、无重复」，于是我按这三条自己写了检查，结果真的抓到问题：建索引之后如果更新了某行的向量，近似查询会把这一行返回两次——因为更新时又把它塞进了 posting list。公开用例里的更新恰好没暴露这一点。"
+    },
+    {
+      "id": "c18",
+      "role": "student",
+      "content": "地址消毒器在这轮又抓到一处越界写：校准召回率时，真值数组按 k 个元素分配，却写入了 k+1 个（多出来的那个是为了把探测行本身去掉）。越界 8 字节在普通构建下往往不崩，但它是在堆上乱写，属于那种「不出事是运气」的问题，必须修。"
+    },
+    {
       "id": "a1",
       "role": "agent",
       "content": "计划已给出：单文件追加式事务日志 + 事务内缓冲 + 提交点 fdatasync；向量用自研 IVF-Flat，并按题包约定 exact/ann 两种模式；容器参数是 --read-only --network=none --cpus=2 --memory=2g，因此所有落盘只能在 /data，且 VECTORDB_DATA_DIR 指向的是宿主路径，取址优先级必须自己判断。"
@@ -247,6 +257,22 @@
       "method": "python3 protocol_check/run.py --command '[\"minivectordb\",\"--data-dir\",\"{data_dir}\"]' --package mysqltest（官方驱动的 --command 模式不需要 docker）",
       "output": "sql_crud: PASS ... transaction_shutdown_rollback: PASS  /  handshake: PASS",
       "conclusion": "20 个公开用例在官方驱动下全部通过，握手专项检查也通过：程序主动输出 ready、逐行 flush、shutdown 后无残留输出、退出码为 0。自研驱动与官方驱动的结论一致。"
+    },
+    {
+      "id": "e17",
+      "title": "近似模式的重复 id",
+      "hypothesis": "题包要求近似模式返回有效且不重复的 id，按这条自己写检查应该能验证。",
+      "method": "建索引后更新一行的向量，再用 ann 模式查询并检查 id 是否重复",
+      "output": "ids: [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 5, 5]  duplicates: [5]",
+      "conclusion": "更新向量时行号被再次写进 posting list，于是同一行出现两次。改成索引记住每行所在的簇：更新时把行从旧簇移到新簇，而不是再追加一次；修正后同样的查询里不再有重复 id。"
+    },
+    {
+      "id": "e18",
+      "title": "地址消毒器抓到的一处越界写",
+      "hypothesis": "校准召回率的代码没有在普通构建下暴露过问题，但消毒器会精确指出越界。",
+      "method": "make asan 后重跑全部用例",
+      "output": "AddressSanitizer: heap-buffer-overflow ... WRITE of size 8 ... in exact_topk src/ivf.c:465 (allocated 80 bytes, wrote 88)",
+      "conclusion": "真值数组按 k 个元素分配却写入了 k+1 个。改成按 k+1 分配后，消毒器下的全部用例（公开 20 项、边界 14 项、崩溃 6 项）干净通过。这一处如果留着，在评测机上是一次没有先兆的堆破坏。"
     }
   ],
   "retrospective": [
@@ -508,6 +534,34 @@
       "result_evidence": {
         "pointer": "/experiments/9/conclusion",
         "quote": "校准会识别出这一点并让查询退回精确路径"
+      }
+    },
+    {
+      "instance": "e17",
+      "dimension": "实验与反馈迭代",
+      "tier": 1.5,
+      "reason": "按题包明文要求自己写检查而不是依赖公开用例，查出近似模式的重复 id，解释成因（更新时重复入表）并改成移动，修正后复测通过。",
+      "student_evidence": {
+        "pointer": "/conversations/16/content",
+        "quote": "近似查询会把这一行返回两次"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/16/output",
+        "quote": "duplicates: [5]"
+      }
+    },
+    {
+      "instance": "e18",
+      "dimension": "独立验证与质疑",
+      "tier": 1.5,
+      "reason": "用地址消毒器独立复核上一轮的改动，发现校准代码的越界写并按报告修正，复测干净。",
+      "student_evidence": {
+        "pointer": "/conversations/17/content",
+        "quote": "真值数组按 k 个元素分配，却写入了 k+1 个"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/17/output",
+        "quote": "AddressSanitizer: heap-buffer-overflow"
       }
     },
     {

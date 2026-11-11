@@ -35,11 +35,24 @@ struct ivf {
   int nprobe;
   float *centroids;    /* nlist * dim */
   ivf_list_t *lists;   /* nlist posting lists */
+  uint32_t *cluster_of; /* the cluster of every row id */
+  uint64_t cluster_of_len;
   int log_fd;
   char base_path[256];
   char log_path[256];
   uint64_t rows_indexed;
 };
+
+/* Removes a row id from a posting list. */
+static void list_remove(ivf_list_t *l, uint64_t rowid) {
+  for (size_t i = 0; i < l->n; i++) {
+    if (l->rows[i] == rowid) {
+      memmove(&l->rows[i], &l->rows[i + 1], (l->n - i - 1) * sizeof(uint64_t));
+      l->n--;
+      return;
+    }
+  }
+}
 
 static void list_push(ivf_list_t *l, uint64_t rowid) {
   if (l->n == l->cap) {
@@ -145,9 +158,17 @@ bool ivf_build(db_t *db, table_t *t, int col, uint32_t seed) {
     size_t changed = ivf_iterate(ix, vecs, rows, n, cluster_of);
     if (changed == 0 && it > 0) break;
   }
+  ix->cluster_of = (uint32_t *)malloc((size_t)(t->nrows + 1) * sizeof(uint32_t));
+  ix->cluster_of_len = (uint64_t)t->nrows + 1;
+  if (ix->cluster_of) {
+    for (uint64_t i = 0; i < ix->cluster_of_len; i++) ix->cluster_of[i] = UINT32_MAX;
+  }
   for (size_t i = 0; i < n; i++) {
     uint64_t r = rows[i];
-    if (cluster_of[r] != UINT32_MAX) list_push(&ix->lists[cluster_of[r]], r);
+    if (cluster_of[r] != UINT32_MAX) {
+      list_push(&ix->lists[cluster_of[r]], r);
+      if (ix->cluster_of) ix->cluster_of[r] = cluster_of[r];
+    }
   }
   free(cluster_of);
   free(rows);
@@ -219,7 +240,9 @@ bool ivf_log_append(ivf_t *ix, const uint32_t *cluster_of, const uint64_t *rows,
   return true;
 }
 
-/* Adds a row to the index (after an insert or a vector update). */
+/* Adds a row to the index, or moves it when the row is already indexed and
+ * its vector changed.  A row is never in two posting lists, so a query can
+ * not report it twice. */
 bool ivf_add(table_t *t, uint64_t rowid) {
   ivf_t *ix = t->ivf;
   if (!ix || !ix->built) return false;
@@ -232,7 +255,31 @@ bool ivf_add(table_t *t, uint64_t rowid) {
     float d = vec_l2(v, ix->centroids + (size_t)c * dim, dim);
     if (d < bestd) { bestd = d; best = c; }
   }
+  /* make room for the cluster of this row */
+  if (ix->cluster_of && rowid >= ix->cluster_of_len) {
+    uint64_t cap = ix->cluster_of_len ? ix->cluster_of_len : 1024;
+    while (cap <= rowid) cap *= 2;
+    uint32_t *p = (uint32_t *)realloc(ix->cluster_of, (size_t)cap * sizeof(uint32_t));
+    if (p) {
+      for (uint64_t i = ix->cluster_of_len; i < cap; i++) p[i] = UINT32_MAX;
+      ix->cluster_of = p;
+      ix->cluster_of_len = cap;
+    }
+  }
+  uint32_t old = (ix->cluster_of && rowid < ix->cluster_of_len) ? ix->cluster_of[rowid]
+                                                               : UINT32_MAX;
+  if (old == (uint32_t)best) {
+    /* the row is already in this cluster: it must not be added twice, or a
+     * query would report it twice */
+    return true;
+  }
+  if (old != UINT32_MAX) {
+    /* the vector changed and the row belongs to another cluster now */
+    list_remove(&ix->lists[old], rowid);
+    ix->rows_indexed--;
+  }
   list_push(&ix->lists[best], rowid);
+  if (ix->cluster_of && rowid < ix->cluster_of_len) ix->cluster_of[rowid] = (uint32_t)best;
   ix->rows_indexed++;
   uint32_t c = (uint32_t)best;
   unsigned char rec[12];
@@ -286,6 +333,23 @@ bool ivf_load(db_t *db, table_t *t) {
   close(fd);
   ix->built = true;
   ix->rows_indexed = total;
+  /* the cluster of every row, so that an updated row can be moved */
+  size_t max_row = 0;
+  for (int c = 0; c < nlist; c++) {
+    for (size_t k = 0; k < ix->lists[c].n; k++) {
+      if (ix->lists[c].rows[k] > max_row) max_row = (size_t)ix->lists[c].rows[k];
+    }
+  }
+  ix->cluster_of = (uint32_t *)calloc(max_row + 2, sizeof(uint32_t));
+  ix->cluster_of_len = max_row + 2;
+  if (ix->cluster_of) {
+    for (uint32_t i = 0; i < ix->cluster_of_len; i++) ix->cluster_of[i] = UINT32_MAX;
+    for (int c = 0; c < nlist; c++) {
+      for (size_t k = 0; k < ix->lists[c].n; k++) {
+        ix->cluster_of[ix->lists[c].rows[k]] = (uint32_t)c;
+      }
+    }
+  }
   snprintf(ix->base_path, sizeof(ix->base_path), "%s", path);
   snprintf(ix->log_path, sizeof(ix->log_path), "%s", logp);
   ix->log_fd = open(logp, O_RDWR | O_CREAT | O_APPEND, 0644);
@@ -299,7 +363,13 @@ bool ivf_load(db_t *db, table_t *t) {
       memcpy(&c, rec, 4);
       memcpy(&r, rec + 4, 8);
       if (c < (uint32_t)nlist) {
+        if (ix->cluster_of && r < ix->cluster_of_len && ix->cluster_of[r] != UINT32_MAX &&
+            ix->cluster_of[r] != c) {
+          list_remove(&ix->lists[ix->cluster_of[r]], r);
+          ix->rows_indexed--;
+        }
         list_push(&ix->lists[c], r);
+        if (ix->cluster_of && r < ix->cluster_of_len) ix->cluster_of[r] = c;
         ix->rows_indexed++;
       }
     }
@@ -425,7 +495,9 @@ double ivf_calibrate(ivf_t *ix, const float *const *vecs, const uint8_t *alive, 
   if (samples < 4) samples = 4;
   /* a deterministic sample of the row ids */
   uint64_t *probe_rows = (uint64_t *)malloc((size_t)samples * sizeof(uint64_t));
-  uint64_t *truth = (uint64_t *)malloc((size_t)k * sizeof(uint64_t));
+  /* the exact answer holds one row more than the requested top k, so that
+   * the probe row itself can be removed from it */
+  uint64_t *truth = (uint64_t *)malloc((size_t)(k + 1) * sizeof(uint64_t));
   if (!probe_rows || !truth) { free(probe_rows); free(truth); return 1.0; }
   uint64_t step = nrows / (uint64_t)samples;
   if (step == 0) step = 1;
@@ -508,6 +580,7 @@ void ivf_free(ivf_t *ix) {
     free(ix->lists);
   }
   free(ix->centroids);
+  free(ix->cluster_of);
   if (ix->log_fd >= 0) close(ix->log_fd);
   free(ix);
 }

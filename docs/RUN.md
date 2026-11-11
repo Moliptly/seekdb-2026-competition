@@ -171,6 +171,7 @@ make edge       # 公开包未覆盖的语义（非法向量、维度、主键�
 make crash      # 强杀 / 恢复 / 原子性
 make bench      # 性能基准
 make recall     # 近似模式召回率
+make spec       # STDIO_PROTOCOL.md 第 7 节的逐字节验收
 ```
 
 题包自带的驱动也可以直接跑本地程序（`--command` 模式，不需要 docker，

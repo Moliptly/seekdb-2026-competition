@@ -187,6 +187,79 @@ def test_varchar_length(binary, tmp):
     check("varchar keeps the unicode content", got == ["中文abc", "é", ""], repr(got))
 
 
+def test_ann_semantics(binary, tmp):
+    """The approximate mode must return valid, unique and matching rows.
+
+    The rules require that the approximate mode returns ids that exist, no
+    duplicates, only rows that satisfy the filter and only rows that are
+    still visible after the updates and deletes.
+    """
+    import random
+    data = tmp / "ann"
+    dim = 16
+    rng = random.Random(9)
+    n = 500
+    vecs = [[rng.uniform(-1, 1) for _ in range(dim)] for _ in range(n)]
+    db = Database(binary, data)
+    db.start()
+    db.request(f"CREATE TABLE t (id BIGINT PRIMARY KEY, cat VARCHAR(8), e VECTOR({dim}))")
+    for start in range(0, n, 50):
+        chunk = vecs[start:start + 50]
+        vals = ", ".join(
+            f"({start + i}, 'c{(start + i) % 4}', '[{','.join(f'{v:.5f}' for v in vec)}]')"
+            for i, vec in enumerate(chunk))
+        db.request(f"INSERT INTO t VALUES {vals}")
+    db.request("CREATE VECTOR INDEX t_vec ON t(e)")
+    # delete a quarter of the rows and move one row to another category
+    db.request("DELETE FROM t WHERE id < 100")
+    db.request("UPDATE t SET cat = 'c9' WHERE id = 100")
+    db.request("INSERT INTO t VALUES (10000, 'c9', '[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]')")
+
+    problems = []
+    for filtered in (False, True):
+        where = " WHERE cat = 'c9'" if filtered else ""
+        for _ in range(20):
+            q = [rng.uniform(-1, 1) for _ in range(dim)]
+            qs = "[" + ",".join(f"{v:.5f}" for v in q) + "]"
+            r = db.request(f"SELECT id, L2_DISTANCE(e, '{qs}') AS d FROM t{where} "
+                           f"ORDER BY d LIMIT 10", "ann")
+            if r.get("ok") is not True:
+                problems.append(f"the query failed: {r}")
+                continue
+            ids = [row[0] for row in r.get("rows", [])]
+            if len(ids) != len(set(ids)):
+                problems.append(f"duplicate ids: {ids}")
+            for i in ids:
+                row = db.request(f"SELECT id, cat FROM t WHERE id = {i}")
+                if not row.get("rows"):
+                    problems.append(f"id {i} does not exist")
+                elif filtered and row["rows"][0][1] != "c9":
+                    problems.append(f"id {i} does not satisfy the filter")
+    db.shutdown()
+    check("the approximate mode returns valid, unique and filtered rows",
+          not problems, "; ".join(problems[:3]))
+
+
+def test_ann_no_duplicate_after_vector_update(binary, tmp):
+    """A row whose vector is updated after the index exists must not be
+    reported twice by the approximate mode."""
+    data = tmp / "anndup"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE d (id BIGINT PRIMARY KEY, e VECTOR(4))")
+    vals = ",".join(f"({i}, '[{i}.0,0.0,0.0,0.0]')" for i in range(1, 21))
+    db.request(f"INSERT INTO d VALUES {vals}")
+    db.request("CREATE VECTOR INDEX d_vec ON d(e)")
+    db.request("UPDATE d SET e = '[9.0,9.0,9.0,9.0]' WHERE id = 5")
+    r = db.request("SELECT id, L2_DISTANCE(e, '[0.0,0.0,0.0,0.0]') AS d FROM d "
+                   "ORDER BY d LIMIT 20", "ann")
+    db.shutdown()
+    ids = [row[0] for row in r.get("rows", [])]
+    dups = [i for i in set(ids) if ids.count(i) > 1]
+    check("a vector update does not duplicate the row in the index",
+          r.get("ok") is True and not dups, f"ids={ids} duplicates={dups}")
+
+
 def test_writes_only_in_the_data_dir(binary, tmp):
     """The container root is read only, so nothing may be written outside the
     data directory."""
@@ -301,6 +374,8 @@ def main() -> int:
         test_large_table_fallback(binary, tmp)
         test_large_dimension(binary, tmp)
         test_writes_only_in_the_data_dir(binary, tmp)
+        test_ann_semantics(binary, tmp)
+        test_ann_no_duplicate_after_vector_update(binary, tmp)
     finally:
         if args.keep:
             print(f"kept {tmp}")

@@ -202,7 +202,7 @@ make official        # 题包自带的 protocol_check/run.py 跑全部公开用�
 make handshake       # 只检查 ready 握手与 shutdown
 make spec            # STDIO_PROTOCOL.md 第 7 节的逐字节验收（5 行输出、退出码 0）
 make cases           # 自研驱动跑公开题包 20 个用例（不需要 docker）
-make edge            # 公开包未覆盖的语义 12 项
+make edge            # 公开包未覆盖的语义 14 项
 make crash           # 强杀/恢复/原子性 6 项
 make bench           # 性能基准
 make recall          # 近似模式召回率
@@ -215,5 +215,17 @@ make asan            # 同一批用例在 ASan/UBSan 下重跑
 也已固化在 `tests/spec_check.py` 里。
 
 `tests/run_cases.py` 是自研的回归驱动，直接按 `STDIO_PROTOCOL.md` 与 `mysqltest/`
-的断言语义（`affected_rows`、`columns`、`rows`、浮点容差 1e-5）比对，
+的断言论义（`affected_rows`、`columns`、`rows`、浮点容差 1e-5）比对，
 不依赖题包自带的驱动，可在没有 docker 的环境下运行。
+
+### 11.1 公开自测包带来的两处修正
+
+公开用例全绿并不等于实现正确。按题包 README 对近似结果的要求（**必须满足过滤条件、
+id 有效、id 不重复**）自己补写的检查，发现了一个公开用例没有覆盖的缺陷：
+**更新某行的向量之后，近似查询会把这一行返回两次**——增量维护时行号被再次追加进了
+posting list。修正方式是让索引记住每一行当前所在的簇，更新时把行**移动**到新簇而不是
+再追加一次（`ivf.c` 的 `ivf_add` / `cluster_of`）。
+
+同一轮里地址消毒器还抓到一处**越界写**：召回率自校准时真值数组按 `k` 个元素分配，
+却写入了 `k+1` 个（多出的那个用于剔除探测行本身）。两处修正各配了一个回归用例，
+消毒器下重跑全部用例（公开 20 项、边界 14 项、崩溃 6 项）零报告。
