@@ -17,7 +17,7 @@ BIN := minivectordb
 BUILD_ID := $(shell cat $(SRC) $(HDR) | sha256sum | cut -c1-12)
 BUILD_FLAGS := -DMVDB_BUILD_ID='"$(BUILD_ID)"'
 
-.PHONY: all clean test cases official handshake spec edge crash bench recall asan material
+.PHONY: all clean test cases official handshake spec edge crash bench recall asan material fuzz hiddenlike
 
 all: $(BIN)
 
@@ -64,6 +64,13 @@ recall: $(BIN)
 # The approximate mode has to agree with the exact one, the index has to
 # follow the records of the table and the vector search has to match a brute
 # force truth.
+# Cases written in the style of the mysqltest package, with the expected
+# results derived from the rules by hand.
+hiddenlike: $(BIN)
+	python3 protocol_check/run.py --command '["./$(BIN)","--data-dir","{data_dir}"]' \
+	    --package tests/hidden_like \
+	    --output "protocol-results/hidden-like-$(shell date +%Y%m%d-%H%M%S)"
+
 fuzz: $(BIN)
 	python3 tests/ann_fuzz.py --binary ./$(BIN) --rounds 120 --large 12000
 	python3 tests/topk_fuzz.py --binary ./$(BIN) --rounds 120

@@ -1,0 +1,4 @@
+CREATE TABLE docs (id BIGINT PRIMARY KEY, name VARCHAR(16));
+INSERT INTO docs VALUES (1, 'alice'), (2, 'Bob'), (3, '中文');
+SELECT id FROM docs WHERE name > 'B' ORDER BY id;
+SELECT id, name FROM docs ORDER BY name;

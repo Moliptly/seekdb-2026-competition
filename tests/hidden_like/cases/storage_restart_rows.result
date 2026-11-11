@@ -1,0 +1,23 @@
+[
+  {},
+  {
+    "affected_rows": 2
+  },
+  {
+    "affected_rows": 1
+  },
+  {
+    "columns": [
+      "id",
+      "category",
+      "content"
+    ],
+    "rows": [
+      [
+        1,
+        "甲",
+        "一"
+      ]
+    ]
+  }
+]

@@ -1,0 +1,34 @@
+[
+  {},
+  {
+    "affected_rows": 3
+  },
+  {
+    "affected_rows": 1
+  },
+  {
+    "affected_rows": 2
+  },
+  {
+    "affected_rows": 1
+  },
+  {
+    "columns": [
+      "id",
+      "category",
+      "content"
+    ],
+    "rows": [
+      [
+        1,
+        "丙",
+        "一"
+      ],
+      [
+        2,
+        "丙",
+        "改"
+      ]
+    ]
+  }
+]

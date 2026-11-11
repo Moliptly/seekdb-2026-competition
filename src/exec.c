@@ -66,6 +66,24 @@ static bool row_matches_except(table_t *t, uint64_t rowid, const cond *c, const 
     if (col < 0) return false;
     if (t->cols[col].type == CT_BIGINT) {
       int64_t v = t->ints[col][rowid];
+      if (c->is_float) {
+        /* A fractional value is compared as it is, it is not truncated to an
+         * integer: "value = 10.5" must not match the row with the value 10. */
+        double dv = c->fval;
+        switch (c->op) {
+          case CMP_EQ: if (!((double)v == dv)) return false; break;
+          case CMP_LT: if (!((double)v < dv)) return false; break;
+          case CMP_LE: if (!((double)v <= dv)) return false; break;
+          case CMP_GT: if (!((double)v > dv)) return false; break;
+          case CMP_GE: if (!((double)v >= dv)) return false; break;
+        }
+        continue;
+      }
+      if (c->sval) {
+        /* A string is not a number: the comparison does not match instead of
+         * coercing the value silently. */
+        return false;
+      }
       switch (c->op) {
         case CMP_EQ: if (v != c->ival) return false; break;
         case CMP_LT: if (!(v < c->ival)) return false; break;
@@ -627,12 +645,14 @@ static bool exec_select(exectx *c, stmt *st) {
       }
     }
     if (verify) {
-      /* the equality conjunct is already satisfied by the posting list */
+      /* The posting list gives the candidates, every condition is checked
+       * again: the key of a fractional or of a string value does not name the
+       * same rows as the value itself. */
       size_t k = 0;
       for (size_t i = 0; i < ncand; i++) {
         uint64_t r = cand[i];
         if (!t->alive[r]) continue;
-        if (!row_matches_except(t, r, st->where, eq)) continue;
+        if (!row_matches(t, r, st->where)) continue;
         cand[k++] = r;
       }
       ncand = k;

@@ -1,0 +1,5 @@
+CREATE TABLE docs (id BIGINT PRIMARY KEY, category VARCHAR(8), content VARCHAR(16));
+INSERT INTO docs VALUES (1, '甲', '一'), (2, '乙', '二');
+DELETE FROM docs WHERE id = 2;
+--restart
+SELECT id, category, content FROM docs ORDER BY id;

@@ -1,0 +1,7 @@
+CREATE TABLE docs (id BIGINT PRIMARY KEY, embedding VECTOR(2));
+INSERT INTO docs VALUES (1, '[1,0]'), (2, '[0,2]'), (3, '[0,1]'), (4, '[3,4]');
+CREATE VECTOR INDEX docs_vec ON docs(embedding);
+--mode ann
+SELECT id, L2_DISTANCE(embedding, '[0,0]') AS distance FROM docs ORDER BY distance LIMIT 2;
+--mode ann
+SELECT id, L2_DISTANCE(embedding, '[0,0]') AS distance FROM docs ORDER BY distance LIMIT 9;

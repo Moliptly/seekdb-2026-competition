@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "scope": "hidden-like",
+  "cases": [
+    {
+      "id": "sql_update_delete",
+      "group": "sql",
+      "test": "cases/sql_update_delete.test",
+      "result": "cases/sql_update_delete.result",
+      "statements": 6
+    },
+    {
+      "id": "sql_string_compare",
+      "group": "sql",
+      "test": "cases/sql_string_compare.test",
+      "result": "cases/sql_string_compare.result",
+      "statements": 4
+    },
+    {
+      "id": "sql_desc_ties",
+      "group": "sql",
+      "test": "cases/sql_desc_ties.test",
+      "result": "cases/sql_desc_ties.result",
+      "statements": 3
+    },
+    {
+      "id": "vector_projection",
+      "group": "vector",
+      "test": "cases/vector_projection.test",
+      "result": "cases/vector_projection.result",
+      "statements": 3
+    },
+    {
+      "id": "vector_ann_small",
+      "group": "vector",
+      "test": "cases/vector_ann_small.test",
+      "result": "cases/vector_ann_small.result",
+      "statements": 5
+    },
+    {
+      "id": "vector_ann_after_restart",
+      "group": "vector",
+      "test": "cases/vector_ann_after_restart.test",
+      "result": "cases/vector_ann_after_restart.result",
+      "statements": 4
+    },
+    {
+      "id": "transaction_read_your_writes",
+      "group": "transaction",
+      "test": "cases/transaction_read_your_writes.test",
+      "result": "cases/transaction_read_your_writes.result",
+      "statements": 8
+    },
+    {
+      "id": "transaction_vector_rollback",
+      "group": "transaction",
+      "test": "cases/transaction_vector_rollback.test",
+      "result": "cases/transaction_vector_rollback.result",
+      "statements": 7
+    },
+    {
+      "id": "sql_empty_filter",
+      "group": "sql",
+      "test": "cases/sql_empty_filter.test",
+      "result": "cases/sql_empty_filter.result",
+      "statements": 4
+    },
+    {
+      "id": "storage_restart_rows",
+      "group": "storage",
+      "test": "cases/storage_restart_rows.test",
+      "result": "cases/storage_restart_rows.result",
+      "statements": 4
+    }
+  ]
+}

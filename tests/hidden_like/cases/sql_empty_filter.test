@@ -1,0 +1,4 @@
+CREATE TABLE docs (id BIGINT PRIMARY KEY, category VARCHAR(8), embedding VECTOR(2));
+INSERT INTO docs VALUES (1, '甲', '[1,0]');
+SELECT id FROM docs WHERE category = '不存在';
+SELECT id, L2_DISTANCE(embedding, '[0,0]') AS d FROM docs WHERE category = '不存在';

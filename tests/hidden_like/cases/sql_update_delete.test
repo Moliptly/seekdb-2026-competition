@@ -1,0 +1,6 @@
+CREATE TABLE docs (id BIGINT PRIMARY KEY, category VARCHAR(8), content VARCHAR(16));
+INSERT INTO docs VALUES (1, '甲', '一'), (2, '甲', '二'), (3, '乙', '三');
+UPDATE docs SET content = '改' WHERE id = 2;
+UPDATE docs SET category = '丙' WHERE category = '甲';
+DELETE FROM docs WHERE id = 3;
+SELECT id, category, content FROM docs ORDER BY id;
