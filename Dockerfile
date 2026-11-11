@@ -11,7 +11,11 @@ FROM gcc:13-bookworm AS build
 
 WORKDIR /build
 COPY src/ ./src/
-RUN gcc -std=gnu11 -O3 -Wall -Wextra -Wno-unused-parameter -Wno-format-truncation \
+# The build id is the hash of the sources; it is printed on stderr when the
+# database starts, so the log of a case shows which build produced it.
+RUN BUILD_ID=$(cat src/*.c src/*.h | sha256sum | cut -c1-12) \
+ && gcc -std=gnu11 -O3 -Wall -Wextra -Wno-unused-parameter -Wno-format-truncation \
+        -DMVDB_BUILD_ID="\"$BUILD_ID\"" \
         -o /build/minivectordb src/*.c -lm \
  && strip /build/minivectordb
 

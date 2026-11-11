@@ -11,6 +11,13 @@
  */
 #include "mvdb.h"
 
+/* The identifier of the build, printed on stderr when the database starts:
+ * it is the hash of the sources, so it also works in the image where there
+ * is no git repository. */
+#ifndef MVDB_BUILD_ID
+#define MVDB_BUILD_ID "unknown"
+#endif
+
 #include <errno.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -91,6 +98,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   fprintf(stderr, "[mvdb] ready, data directory '%s'\n", data_dir);
+  fprintf(stderr, "[mvdb] build %s\n", MVDB_BUILD_ID);
 
   /* The handshake is the first thing on stdout and is flushed immediately. */
   {
@@ -196,6 +204,19 @@ int main(int argc, char **argv) {
       ob_puts(&b, ",\"message\":");
       ob_json_string(&b, err_msg, strlen(err_msg));
       ob_puts(&b, "}}\n");
+    }
+    /* The judge collects the log of a case, so the log has to show what was
+     * asked and what was answered.  Everything goes to stderr, stdout only
+     * carries the protocol. */
+    {
+      const char *sqlt = (sqlv && sqlv->type == JSON_STRING) ? sqlv->sval : "";
+      size_t sqll = (sqlv && sqlv->type == JSON_STRING) ? (size_t)sqlv->slen : 0;
+      char sqlbuf[161];
+      if (sqll > 160) sqll = 160;
+      memcpy(sqlbuf, sqlt, sqll);
+      sqlbuf[sqll] = '\0';
+      fprintf(stderr, "[mvdb] req mode=%s sql=%s\n", mode, sqlbuf);
+      fprintf(stderr, "[mvdb] res %.*s\n", (int)(b.len > 300 ? 300 : b.len), b.data);
     }
     write_line(b.data, b.len);
     ob_free(&b);

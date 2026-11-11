@@ -98,20 +98,31 @@ def test_duplicate_in_one_statement(binary, tmp):
 
 
 def test_ties_and_order(binary, tmp):
-    """Equal distances are ordered by the primary key, also when descending."""
+    """Equal distances are ordered by the primary key, also when descending.
+
+    The rules say that the ties of an ordinary ORDER BY are ordered by the
+    primary key ascending as well, so the direction of the order does not
+    change the order of the tied rows.
+    """
     data = tmp / "ties"
     db = Database(binary, data)
     db.start()
-    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR(2))")
-    db.request("INSERT INTO t VALUES (5, '[1,0]'), (2, '[0,3]'), (9, '[-2,0]')")
-    up = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t ORDER BY d LIMIT 3")
-    down = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t ORDER BY d DESC LIMIT 3")
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, g BIGINT, e VECTOR(2))")
+    db.request("INSERT INTO t VALUES (5, 1, '[1,0]'), (2, 1, '[0,3]'), (9, 1, '[-2,0]'), "
+               "(7, 1, '[0,1]')")
+    up = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t ORDER BY d LIMIT 4")
+    down = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t ORDER BY d DESC LIMIT 4")
+    plain = db.request("SELECT id FROM t ORDER BY g DESC LIMIT 4")
     db.shutdown()
-    # the distances are 1.0, 3.0 and 2.0
-    ok = [r[0] for r in up.get("rows", [])] == [5, 9, 2]
-    ok2 = [r[0] for r in down.get("rows", [])] == [2, 9, 5]
-    check("ties are ordered by the primary key", ok and ok2,
-          f"asc={[r[0] for r in up.get('rows', [])]} desc={[r[0] for r in down.get('rows', [])]}")
+    # the distances are 1.0 (id 5), 1.0 (id 7), 2.0 (id 9) and 3.0 (id 2)
+    ok = [r[0] for r in up.get("rows", [])] == [5, 7, 9, 2]
+    # descending: the two tied rows keep the primary key ascending
+    ok2 = [r[0] for r in down.get("rows", [])] == [2, 9, 5, 7]
+    # every value of g is the same, so the primary key decides in both directions
+    ok3 = [r[0] for r in plain.get("rows", [])] == [2, 5, 7, 9]
+    check("ties are ordered by the primary key", ok and ok2 and ok3,
+          f"asc={[r[0] for r in up.get('rows', [])]} desc={[r[0] for r in down.get('rows', [])]} "
+          f"plain={[r[0] for r in plain.get('rows', [])]}")
 
 
 def test_transaction_isolation(binary, tmp):

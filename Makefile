@@ -11,13 +11,18 @@ LDLIBS  ?= -lm
 SRC := $(wildcard src/*.c)
 HDR := src/mvdb.h
 BIN := minivectordb
+# The identifier of the build: the hash of the sources.  It is printed on
+# stderr when the database starts, so the log of a case shows which build
+# produced it.
+BUILD_ID := $(shell cat $(SRC) $(HDR) | sha256sum | cut -c1-12)
+BUILD_FLAGS := -DMVDB_BUILD_ID='"$(BUILD_ID)"'
 
 .PHONY: all clean test cases official handshake spec edge crash bench recall asan material
 
 all: $(BIN)
 
 $(BIN): $(SRC) $(HDR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
+	$(CC) $(CFLAGS) $(BUILD_FLAGS) $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 # The public test package of the contest, executed over the stdio protocol.
 cases: $(BIN)
@@ -68,7 +73,7 @@ fuzz: $(BIN)
 asan: $(SRC) $(HDR)
 	$(CC) -std=gnu11 -O1 -g -fsanitize=address,undefined \
 	    -Wall -Wextra -Wno-unused-parameter -Wno-format-truncation \
-	    -o $(BIN)-asan $(SRC) $(LDLIBS)
+	    $(BUILD_FLAGS) -o $(BIN)-asan $(SRC) $(LDLIBS)
 
 # Rebuild the agent prompt material from the recorded experiments.
 material:

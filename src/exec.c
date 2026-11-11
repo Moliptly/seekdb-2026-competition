@@ -512,7 +512,12 @@ static int sort_rows_cmp(const void *pa, const void *pb, void *arg) {
     cmp = cmp_code_points(t->strs[col][*ra] ? t->strs[col][*ra] : "", t->strlens[col][*ra],
                           t->strs[col][*rb] ? t->strs[col][*rb] : "", t->strlens[col][*rb]);
   }
-  if (cmp == 0) cmp = (t->pk[*ra] < t->pk[*rb]) ? -1 : (t->pk[*ra] > t->pk[*rb]) ? 1 : 0;
+  if (cmp == 0) {
+    /* The ties are ordered by the primary key, and the rule is the same for
+     * both directions: "the ties of an ordinary ORDER BY are ordered by the
+     * primary key ascending as well". */
+    return (t->pk[*ra] < t->pk[*rb]) ? -1 : (t->pk[*ra] > t->pk[*rb]) ? 1 : 0;
+  }
   return sc->desc ? -cmp : cmp;
 }
 
