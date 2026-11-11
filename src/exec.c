@@ -344,8 +344,9 @@ static bool exec_insert(exectx *c, stmt *st) {
       map[nmap++] = col;
     }
   } else {
-    if (st->nvalcols > t->ncols) {
-      return fail(c, "unsupported_sql", "too many values for table '%s'", st->table);
+    if (st->nvalcols != t->ncols) {
+      return fail(c, "unsupported_sql", "the value count does not match the columns of table '%s'",
+                  st->table);
     }
     for (int i = 0; i < st->nvalcols; i++) map[nmap++] = i;
   }
@@ -369,6 +370,15 @@ static bool exec_insert(exectx *c, stmt *st) {
       if (map[k] == t->pk_idx) pkpos = k;
     }
     if (pkpos < 0) return fail(c, "unsupported_sql", "the primary key must be given");
+    /* A vector column without a value would be stored as a zero vector, so
+     * the statement is refused instead of writing a value nobody asked for. */
+    if (t->vec_idx >= 0) {
+      int vecpos = -1;
+      for (int k = 0; k < nmap; k++) {
+        if (map[k] == t->vec_idx) vecpos = k;
+      }
+      if (vecpos < 0) return fail(c, "unsupported_sql", "the vector column must be given");
+    }
     for (int r = 0; r < st->nrows; r++) {
       int64_t pk = rows[r * nmap + pkpos].ival;
       uint64_t found;
@@ -415,6 +425,11 @@ static bool exec_update(exectx *c, stmt *st) {
   for (cond *q = st->where; q; q = q->next) {
     int col = find_column(t, q->colname);
     if (col < 0) return fail(c, "no_such_column", "unknown column '%s'", q->colname);
+    /* A vector column cannot be compared with a scalar, the statement is
+     * refused instead of matching every row. */
+    if (t->cols[col].type == CT_VECTOR) {
+      return fail(c, "unsupported_sql", "'%s' is a vector column", q->colname);
+    }
     q->col = col;
   }
   uint64_t *rows = (uint64_t *)arena_alloc(c->a, (size_t)(t->nrows + 1) * sizeof(uint64_t));
@@ -455,6 +470,11 @@ static bool exec_delete(exectx *c, stmt *st) {
   for (cond *q = st->where; q; q = q->next) {
     int col = find_column(t, q->colname);
     if (col < 0) return fail(c, "no_such_column", "unknown column '%s'", q->colname);
+    /* A vector column cannot be compared with a scalar, the statement is
+     * refused instead of matching every row. */
+    if (t->cols[col].type == CT_VECTOR) {
+      return fail(c, "unsupported_sql", "'%s' is a vector column", q->colname);
+    }
     q->col = col;
   }
   uint64_t *rows = (uint64_t *)arena_alloc(c->a, (size_t)(t->nrows + 1) * sizeof(uint64_t));
@@ -524,6 +544,11 @@ static bool exec_select(exectx *c, stmt *st) {
   for (cond *q = st->where; q; q = q->next) {
     int col = find_column(t, q->colname);
     if (col < 0) return fail(c, "no_such_column", "unknown column '%s'", q->colname);
+    /* A vector column cannot be compared with a scalar, the statement is
+     * refused instead of matching every row. */
+    if (t->cols[col].type == CT_VECTOR) {
+      return fail(c, "unsupported_sql", "'%s' is a vector column", q->colname);
+    }
     q->col = col;
   }
   if (st->order_kind == 1) {
