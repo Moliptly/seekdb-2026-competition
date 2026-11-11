@@ -164,14 +164,23 @@ BEGIN;  COMMIT;  ROLLBACK;
 
 ```bash
 make            # 编译
-make cases      # 公开题包 20 个用例
+make official   # 用题包自带的 protocol_check/run.py 跑全部公开用例
+make handshake  # 只检查启动握手与关闭
+make cases      # 公开题包 20 个用例（自研驱动，不需要 docker）
 make edge       # 公开包未覆盖的语义（非法向量、维度、主键更新、大维度等）
 make crash      # 强杀 / 恢复 / 原子性
 make bench      # 性能基准
 make recall     # 近似模式召回率
 ```
 
-也可以直接用题包自带的驱动（需要 docker）：
+题包自带的驱动也可以直接跑本地程序（`--command` 模式，不需要 docker，
+断言语义与判题器一致）：
+
+```bash
+make official
+```
+
+有 docker 权限时，用镜像跑一遍（平台的做法）：
 
 ```bash
 export VECTORDB_IMAGE='minivectordb:round2'

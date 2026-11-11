@@ -325,6 +325,16 @@ experiments = [
                       "集成后的端到端查询耗时也没有变化（194us 与 201us，属于测量噪声）。"
                       "于是把线程池整个撤掉，保留串行扫描：少一个活动部件，也少一类并发缺陷。",
     },
+    {
+        "id": "e16",
+        "title": "用题包自带的官方驱动跑一遍",
+        "hypothesis": "自研驱动可能和判题器的断言语义有细微差别，必须用官方驱动再验一次。",
+        "method": "python3 protocol_check/run.py --command '[\"minivectordb\",\"--data-dir\",\"{data_dir}\"]' "
+                  "--package mysqltest（官方驱动的 --command 模式不需要 docker）",
+        "output": "sql_crud: PASS ... transaction_shutdown_rollback: PASS  /  handshake: PASS",
+        "conclusion": "20 个公开用例在官方驱动下全部通过，握手专项检查也通过：程序主动输出 ready、"
+                      "逐行 flush、shutdown 后无残留输出、退出码为 0。自研驱动与官方驱动的结论一致。",
+    },
 ]
 
 retrospective = [
@@ -536,6 +546,17 @@ evidence_index = [
                              "quote": "不能让「近似模式」变成一个比精确模式更慢的模式"},
         "result_evidence": {"pointer": "/experiments/9/conclusion",
                              "quote": "校准会识别出这一点并让查询退回精确路径"},
+    },
+    {
+        "instance": "e16",
+        "dimension": "独立验证与质疑",
+        "tier": 1.5,
+        "reason": "不满足于自研驱动的结论，改用题包自带的官方驱动与判题器同款的断言重新验证，"
+                  "并单独验证握手与关闭的行为。",
+        "student_evidence": {"pointer": "/experiments/15/hypothesis",
+                             "quote": "自研驱动可能和判题器的断言语义有细微差别，必须用官方驱动再验一次"},
+        "result_evidence": {"pointer": "/experiments/15/output",
+                             "quote": "handshake: PASS"},
     },
     {
         "instance": "e15",

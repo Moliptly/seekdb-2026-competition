@@ -11,6 +11,7 @@ unsupported statement.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import tempfile
@@ -186,6 +187,32 @@ def test_varchar_length(binary, tmp):
     check("varchar keeps the unicode content", got == ["中文abc", "é", ""], repr(got))
 
 
+def test_writes_only_in_the_data_dir(binary, tmp):
+    """The container root is read only, so nothing may be written outside the
+    data directory."""
+    work = tmp / "ro"
+    work.mkdir(parents=True, exist_ok=True)
+    data = work / "data"
+    cwd = os.getcwd()
+    os.chdir(work)
+    try:
+        db = Database(binary, data)
+        db.start()
+        db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR(2))")
+        db.request("INSERT INTO t VALUES (1, '[1,2]')")
+        db.request("CREATE VECTOR INDEX t_vec ON t(e)")
+        db.request("SELECT id, L2_DISTANCE(e, '[0,0]') AS d FROM t")
+        db.shutdown()
+    finally:
+        os.chdir(cwd)
+    # the driver's own stderr log is written next to the data directory
+    stray = [p.name for p in work.iterdir()
+             if p.name != "data" and not p.name.endswith(".stderr.log")]
+    inside = sorted(p.name for p in data.iterdir()) if data.exists() else []
+    check("nothing is written outside the data directory", not stray,
+          f"stray={stray} data={inside}")
+
+
 def test_large_dimension(binary, tmp):
     """A vector column with more than 1024 dimensions must work."""
     import random
@@ -273,6 +300,7 @@ def main() -> int:
         test_varchar_length(binary, tmp)
         test_large_table_fallback(binary, tmp)
         test_large_dimension(binary, tmp)
+        test_writes_only_in_the_data_dir(binary, tmp)
     finally:
         if args.keep:
             print(f"kept {tmp}")

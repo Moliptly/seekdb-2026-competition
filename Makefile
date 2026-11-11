@@ -12,7 +12,7 @@ SRC := $(wildcard src/*.c)
 HDR := src/mvdb.h
 BIN := minivectordb
 
-.PHONY: all clean test cases edge crash bench recall asan material
+.PHONY: all clean test cases official handshake edge crash bench recall asan material
 
 all: $(BIN)
 
@@ -22,6 +22,18 @@ $(BIN): $(SRC) $(HDR)
 # The public test package of the contest, executed over the stdio protocol.
 cases: $(BIN)
 	python3 tests/run_cases.py --binary ./$(BIN) --package mysqltest
+
+# The official self test driver of the contest package.  It uses the same
+# assertion semantics as the judge; --command runs the binary directly, so no
+# docker is needed.  The image based run (--image) is what the platform does.
+official: $(BIN)
+	python3 protocol_check/run.py --command '["$(CURDIR)/$(BIN)","--data-dir","{data_dir}"]' \
+	    --package mysqltest --output "protocol-results/public-$$(date +%Y%m%d-%H%M%S)"
+
+# Only the startup and the shutdown, without any SQL.
+handshake: $(BIN)
+	python3 protocol_check/run.py --command '["$(CURDIR)/$(BIN)","--data-dir","{data_dir}"]' \
+	    --handshake-only --output "protocol-results/handshake-$$(date +%Y%m%d-%H%M%S)"
 
 # The edge cases that the public package does not cover.
 edge: $(BIN)

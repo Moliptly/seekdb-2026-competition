@@ -198,12 +198,18 @@ gcc -std=gnu11 -O3 -o minivectordb src/*.c -lm
 
 ```bash
 make                 # 编译
-make cases           # 公开题包 20 个用例（协议层、存储、事务、向量）
+make official        # 题包自带的 protocol_check/run.py 跑全部公开用例（判题器同款断言）
+make handshake       # 只检查 ready 握手与 shutdown
+make cases           # 自研驱动跑公开题包 20 个用例（不需要 docker）
+make edge            # 公开包未覆盖的语义 12 项
 make crash           # 强杀/恢复/原子性 6 项
 make bench           # 性能基准
 make recall          # 近似模式召回率
 make asan            # 同一批用例在 ASan/UBSan 下重跑
 ```
+
+公开题包 20 个用例在**题包自带的官方驱动**（`protocol_check/run.py`，断言语义与判题器一致）
+下同样全部通过，握手专项检查也通过。
 
 `tests/run_cases.py` 是自研的回归驱动，直接按 `STDIO_PROTOCOL.md` 与 `mysqltest/`
 的断言语义（`affected_rows`、`columns`、`rows`、浮点容差 1e-5）比对，
