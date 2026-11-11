@@ -359,8 +359,15 @@ static bool expect_tok(parser *ps, tok_kind k, const char *what) {
   return false;
 }
 
+/* A word that was lexed as a keyword can still be used as a name: a column
+ * called "vector" or "key" is legal, the keyword list only gives the usual
+ * meaning to the words in the places where a statement expects them. */
+static bool name_token(parser *ps) {
+  return ps->cur.kind == T_IDENT || ps->cur.kind >= T_CREATE;
+}
+
 static bool copy_ident(parser *ps, char *dst, size_t dstsz) {
-  if (ps->cur.kind != T_IDENT) { perr(ps, "expected an identifier"); return false; }
+  if (!name_token(ps)) { perr(ps, "expected an identifier"); return false; }
   if (ps->cur.len >= dstsz) { perr(ps, "identifier too long"); return false; }
   memcpy(dst, ps->cur.text, ps->cur.len);
   dst[ps->cur.len] = '\0';
@@ -395,7 +402,7 @@ static expr *parse_expr(parser *ps) {
   if (ps->cur.kind == T_L2) {
     next_token(ps);
     if (!expect_tok(ps, T_LPAREN, "'('")) return NULL;
-    if (ps->cur.kind != T_IDENT) { perr(ps, "expected a vector column"); return NULL; }
+    if (!name_token(ps)) { perr(ps, "expected a vector column"); return NULL; }
     if (!copy_ident(ps, e->colname, sizeof(e->colname))) return NULL;
     if (!expect_tok(ps, T_COMMA, "','")) return NULL;
     if (ps->cur.kind == T_VECLIT) {
@@ -413,7 +420,7 @@ static expr *parse_expr(parser *ps) {
     e->kind = EX_L2;
     return e;
   }
-  if (ps->cur.kind == T_IDENT) {
+  if (name_token(ps)) {
     if (!copy_ident(ps, e->colname, sizeof(e->colname))) return NULL;
     e->kind = EX_COL;
     return e;
@@ -429,7 +436,7 @@ static cond *parse_cond(parser *ps) {
     cond *c = (cond *)arena_calloc(ps->a, sizeof(cond));
     if (!c) { perr(ps, "out of memory"); return NULL; }
     c->col = -1;
-    if (ps->cur.kind != T_IDENT) { perr(ps, "expected a column in WHERE"); return NULL; }
+    if (!name_token(ps)) { perr(ps, "expected a column in WHERE"); return NULL; }
     if (!copy_ident(ps, c->colname, sizeof(c->colname))) return NULL;
     tok_kind op = ps->cur.kind;
     if (op != T_EQ && op != T_LT && op != T_LE && op != T_GT && op != T_GE) {
@@ -597,7 +604,7 @@ static bool parse_create_index(parser *ps, stmt *st) {
   if (!expect_tok(ps, T_ON, "'ON'")) return false;
   if (!copy_ident(ps, st->table, sizeof(st->table))) return false;
   if (!expect_tok(ps, T_LPAREN, "'('")) return false;
-  if (ps->cur.kind != T_IDENT) { perr(ps, "expected a vector column"); return false; }
+  if (!name_token(ps)) { perr(ps, "expected a vector column"); return false; }
   if (!copy_ident(ps, st->cols[0].name, sizeof(st->cols[0].name))) return false;
   if (!expect_tok(ps, T_RPAREN, "')'")) return false;
   st->ncols = 1;
@@ -725,7 +732,7 @@ static bool parse_select(parser *ps, stmt *st) {
   if (ps->cur.kind == T_ORDER) {
     next_token(ps);
     if (!expect_tok(ps, T_BY, "'BY'")) return false;
-    if (ps->cur.kind == T_IDENT) {
+    if (name_token(ps)) {
       char name[64];
       if (!copy_ident(ps, name, sizeof(name))) return false;
       /* An output alias wins over a table column so that

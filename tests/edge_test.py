@@ -260,6 +260,25 @@ def test_escaped_quote(binary, tmp):
           hit.get("rows") == [[2]], repr(hit.get("rows")))
 
 
+def test_keyword_as_column_name(binary, tmp):
+    """A column may be called like a keyword ("vector", "key", "order")."""
+    data = tmp / "kwcol"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, vector VECTOR(2), key VARCHAR(8))")
+    db.request("INSERT INTO t VALUES (1, '[1,2]', 'k')")
+    rows = db.request("SELECT id, vector, key FROM t ORDER BY id")
+    dist = db.request("SELECT id, L2_DISTANCE(vector, '[0,0]') AS d FROM t")
+    where = db.request("SELECT id FROM t WHERE key = 'k'")
+    db.shutdown()
+    check("a column may be named like a keyword",
+          rows.get("rows") == [[1, [1.0, 2.0], "k"]], repr(rows.get("rows")))
+    check("a vector column named like a keyword is searchable",
+          dist.get("rows") == [[1, 2.2360680103302]], repr(dist.get("rows")))
+    check("a keyword named column works in a condition",
+          where.get("rows") == [[1]], repr(where.get("rows")))
+
+
 def test_unsupported_statements(binary, tmp):
     """Unsupported statements fail but never kill the process."""
     data = tmp / "unsupported"
@@ -502,6 +521,7 @@ def main() -> int:
         test_vector_projection(binary, tmp)
         test_limit_zero(binary, tmp)
         test_escaped_quote(binary, tmp)
+        test_keyword_as_column_name(binary, tmp)
         test_unsupported_statements(binary, tmp)
         test_ordering_of_plain_columns(binary, tmp)
         test_varchar_length(binary, tmp)
