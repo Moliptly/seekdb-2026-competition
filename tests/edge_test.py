@@ -186,6 +186,52 @@ def test_varchar_length(binary, tmp):
     check("varchar keeps the unicode content", got == ["中文abc", "é", ""], repr(got))
 
 
+def test_large_table_fallback(binary, tmp):
+    """A table whose vectors exceed the memory budget still answers queries.
+
+    The budget is lowered with MVDB_VEC_CACHE_MB, so the table switches to
+    reading its vectors from the payload pool; the answers must not change.
+    """
+    import os
+    import random
+    data = tmp / "large"
+    rows = 400
+    dim = 64
+    rng = random.Random(3)
+    vecs = [[rng.uniform(-1, 1) for _ in range(dim)] for _ in range(rows)]
+    db = Database(binary, data)
+    db.start()
+    db.request(f"CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR({dim}))")
+    for start in range(0, rows, 50):
+        chunk = vecs[start:start + 50]
+        vals = ", ".join(f"({start + i}, '[{','.join(f'{v:.5f}' for v in vec)}]')"
+                         for i, vec in enumerate(chunk))
+        db.request(f"INSERT INTO t VALUES {vals}")
+    q = vecs[7]
+    qs = "[" + ",".join(f"{v:.5f}" for v in q) + "]"
+    before = db.request(f"SELECT id, L2_DISTANCE(e, '{qs}') AS d FROM t ORDER BY d LIMIT 5")
+    db.shutdown()
+
+    # now with a budget of one megabyte the vectors no longer fit into memory
+    os.environ["MVDB_VEC_CACHE_MB"] = "1"
+    db = Database(binary, data)
+    db.start()
+    db.request(f"CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR({dim}))")
+    for start in range(0, rows, 50):
+        chunk = vecs[start:start + 50]
+        vals = ", ".join(f"({start + i}, '[{','.join(f'{v:.5f}' for v in vec)}]')"
+                         for i, vec in enumerate(chunk))
+        db.request(f"INSERT INTO t VALUES {vals}")
+    after = db.request(f"SELECT id, L2_DISTANCE(e, '{qs}') AS d FROM t ORDER BY d LIMIT 5")
+    db.shutdown()
+    os.environ.pop("MVDB_VEC_CACHE_MB", None)
+
+    ok = before.get("rows") == after.get("rows") and len(before.get("rows", [])) == 5
+    ok2 = before.get("rows", [{}])[0][0] == 7
+    check("a table beyond the memory budget still answers", ok and ok2,
+          f"cached={before.get('rows', [])[:1]} pool={after.get('rows', [])[:1]}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", default="./minivectordb")
@@ -203,6 +249,7 @@ def main() -> int:
         test_unsupported_statements(binary, tmp)
         test_ordering_of_plain_columns(binary, tmp)
         test_varchar_length(binary, tmp)
+        test_large_table_fallback(binary, tmp)
     finally:
         if args.keep:
             print(f"kept {tmp}")

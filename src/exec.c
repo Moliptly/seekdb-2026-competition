@@ -153,8 +153,12 @@ static void emit_slot(outbuf *body, table_t *t, stmt *st, int k, uint64_t rowid)
   }
   expr *e = &st->items[k];
   if (e->kind == EX_L2) {
-    const float *v = t->vecs[e->col][rowid];
-    ob_json_double(body, v ? vec_l2(v, e->vec, t->dim) : 0.0);
+    float buf[4096];
+    if (table_row_vector(t, e->col, rowid, buf)) {
+      ob_json_double(body, vec_l2(buf, e->vec, t->dim));
+    } else {
+      ob_json_double(body, 0.0);
+    }
     return;
   }
   if (t->cols[e->col].type == CT_BIGINT) {
@@ -656,8 +660,8 @@ static bool exec_select(exectx *c, stmt *st) {
     }
     dres_t *res = db->scratch_res;
     clock_gettime(CLOCK_MONOTONIC, &q1);
-    size_t nres = vec_scan_sq((const float *const *)t->vecs[vcol], t->alive, use_all ? NULL : cand,
-                              use_all ? (size_t)t->nrows : ncand, de->vec, dim, res);
+    size_t nres = table_scan_sq(t, vcol, t->alive, use_all ? NULL : cand,
+                                use_all ? (size_t)t->nrows : ncand, de->vec, dim, res);
     clock_gettime(CLOCK_MONOTONIC, &q1);
     if (getenv("MVDB_DEBUG"))
       fprintf(stderr, "[mvdb] topk: use_all=%d ncand=%zu nres=%zu nrows=%llu\n", (int)use_all, ncand,

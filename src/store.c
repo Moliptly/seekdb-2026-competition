@@ -223,6 +223,7 @@ static table_t *table_new(db_t *db, uint64_t id, const char *name, const column_
   t->vec_idx = vec_idx;
   t->dim = (vec_idx >= 0) ? cols[vec_idx].dim : 0;
   t->vec_fd = -1;
+  t->vec_cached = true;
   table_init_columns(t);
   pkmap_init(t);
   db->tables[db->ntables++] = t;
@@ -240,6 +241,78 @@ static int table_open_vector_file(db_t *db, table_t *t) {
   if (fd < 0) return -1;
   t->vec_fd = fd;
   return 0;
+}
+
+/* Reads a vector from the payload pool, using a small read cache so that a
+ * sequential scan does not issue one system call per row. */
+bool table_pool_read(table_t *t, uint64_t slot, float *dst) {
+  if (t->vec_fd < 0) return false;
+  size_t bytes = (size_t)t->dim * sizeof(float);
+  if (!t->pool_buf) {
+    t->pool_buf_cap = 1u << 20;
+    t->pool_buf = (unsigned char *)malloc(t->pool_buf_cap);
+    t->pool_buf_slots = 0;
+    if (!t->pool_buf) { t->pool_buf_cap = 0; return false; }
+  }
+  size_t slots_per_buf = t->pool_buf_cap / bytes;
+  if (slots_per_buf == 0) slots_per_buf = 1;
+  if (slot >= t->pool_buf_slot && slot < t->pool_buf_slot + t->pool_buf_slots) {
+    memcpy(dst, t->pool_buf + (size_t)(slot - t->pool_buf_slot) * bytes, bytes);
+    return true;
+  }
+  uint64_t start = (slot / slots_per_buf) * slots_per_buf;
+  size_t want = slots_per_buf;
+  if (start + want > t->vec_pool_rows) want = (size_t)(t->vec_pool_rows - start);
+  if (want == 0) return false;
+  size_t nbytes = want * bytes;
+  size_t got = 0;
+  while (got < nbytes) {
+    ssize_t n = pread(t->vec_fd, t->pool_buf + got, nbytes - got,
+                      (off_t)((start * (uint64_t)bytes) + got));
+    if (n <= 0) {
+      if (n < 0 && errno == EINTR) continue;
+      break;
+    }
+    got += (size_t)n;
+  }
+  if (got < bytes) return false;
+  t->pool_buf_slot = start;
+  t->pool_buf_slots = got / bytes;
+  memcpy(dst, t->pool_buf + (size_t)(slot - start) * bytes, bytes);
+  return true;
+}
+
+/* Returns the vector of a row, from the memory cache or from the pool. */
+bool table_row_vector(table_t *t, int vcol, uint64_t rowid, float *dst) {
+  if (vcol < 0 || vcol >= t->ncols) return false;
+  const float *v = t->vecs[vcol] ? t->vecs[vcol][rowid] : NULL;
+  if (v) {
+    memcpy(dst, v, (size_t)t->dim * sizeof(float));
+    return true;
+  }
+  if (rowid >= t->nrows) return false;
+  return table_pool_read(t, t->vec_slot[rowid], dst);
+}
+
+/* The scan of the query path.  A table that caches its vectors uses the
+ * vectorised batch scan, a table that exceeded the memory budget reads the
+ * vectors from the payload pool instead. */
+size_t table_scan_sq(table_t *t, int vcol, const uint8_t *alive, const uint64_t *rows,
+                      size_t nrows, const float *q, int dim, dres_t *out) {
+  if (t->vec_cached) {
+    return vec_scan_sq((const float *const *)t->vecs[vcol], alive, rows, nrows, q, dim, out);
+  }
+  size_t m = 0;
+  float buf[4096];
+  for (size_t i = 0; i < nrows; i++) {
+    uint64_t r = rows ? rows[i] : (uint64_t)i;
+    if (alive && !alive[r]) continue;
+    if (!table_row_vector(t, vcol, r, buf)) continue;
+    out[m].rowid = r;
+    out[m].sq = vec_l2_sq(buf, q, dim);
+    m++;
+  }
+  return m;
 }
 
 static bool table_write_vector(table_t *t, uint64_t slot, const float *vec) {
@@ -468,7 +541,8 @@ static bool log_row_frame(db_t *db, table_t *t, uint64_t rowid, uint8_t kind) {
 /* Writes the pending transaction to the log and makes it durable. */
 bool txn_commit(db_t *db) {
   bool ok = true;
-  /* 1. vector payloads first: they must be durable before the commit frame */
+  /* 1. the vector payloads were written when the rows were applied; they
+   * must be durable before the commit frame */
   int synced_fd = -1;
   for (size_t i = 0; i < db->dirty_n && ok; i++) {
     dirty_row *d = &db->dirty[i];
@@ -476,7 +550,6 @@ bool txn_commit(db_t *db) {
     if (!t || t->vec_idx < 0) continue;
     if (d->kind == 2) continue;
     if (!t->alive[d->rowid]) continue;
-    if (!table_write_vector(t, t->vec_slot[d->rowid], t->vecs[t->vec_idx][d->rowid])) { ok = false; break; }
     if (synced_fd < 0) synced_fd = t->vec_fd;
   }
   if (ok && synced_fd >= 0) {
@@ -604,8 +677,16 @@ static void recover_row(db_t *db, uint8_t type, const unsigned char *p, size_t l
     t->vec_slot[rowid] = slot;
     if (slot + 1 > t->vec_next_slot) t->vec_next_slot = slot + 1;
     size_t bytes = (size_t)t->dim * sizeof(float);
-    float *v = (float *)arena_alloc(&db->arena, bytes);
-    if (v && table_read_vector(t, slot, v)) t->vecs[t->vec_idx][rowid] = v;
+    if (db->vec_cache_bytes + bytes > db->vec_cache_limit) {
+      t->vec_cached = false;
+    } else {
+      float *v = (float *)arena_alloc(&db->arena, bytes);
+      if (v && table_read_vector(t, slot, v)) {
+        t->vecs[t->vec_idx][rowid] = v;
+        db->vec_cache_bytes += bytes;
+        t->vec_bytes += bytes;
+      }
+    }
   }
   if (!was_alive) {
     t->alive[rowid] = 1;
@@ -745,6 +826,15 @@ int db_open(db_t *db, const char *data_dir) {
   struct stat lst;
   if (fstat(db->log_fd, &lst) == 0 && lst.st_size > 0) db->log_size = (uint64_t)lst.st_size;
   db->next_txn = 1;
+  db->vec_cache_limit = 256ull * 1024 * 1024;
+  {
+    /* the budget can be lowered for the local tests of the large data path */
+    const char *env = getenv("MVDB_VEC_CACHE_MB");
+    if (env && *env) {
+      long mb = strtol(env, NULL, 10);
+      if (mb > 0) db->vec_cache_limit = (uint64_t)mb * 1024 * 1024;
+    }
+  }
   if (!db_recover(db)) {
     /* A damaged tail is tolerated: the log is truncated to the last good
      * frame boundary so that new writes stay append only. */
@@ -803,10 +893,25 @@ uint64_t store_insert_row(db_t *db, table_t *t, const cell_value *cells) {
       t->strlens[c][rowid] = cells[c].slen;
     } else if (t->cols[c].type == CT_VECTOR) {
       size_t bytes = (size_t)t->dim * sizeof(float);
-      float *copy = (float *)arena_alloc(&db->arena, bytes);
-      if (copy && cells[c].vec) memcpy(copy, cells[c].vec, bytes);
-      t->vecs[c][rowid] = copy;
-      t->vec_slot[rowid] = t->vec_next_slot++;
+      uint64_t slot = t->vec_next_slot++;
+      t->vec_slot[rowid] = slot;
+      if (t->vec_cached) {
+        if (db->vec_cache_bytes + bytes > db->vec_cache_limit) {
+          /* the memory budget is exhausted: this table stops caching its
+           * vectors in memory and reads them from the payload pool */
+          t->vec_cached = false;
+        } else {
+          float *copy = (float *)arena_alloc(&db->arena, bytes);
+          if (copy && cells[c].vec) memcpy(copy, cells[c].vec, bytes);
+          t->vecs[c][rowid] = copy;
+          db->vec_cache_bytes += bytes;
+          t->vec_bytes += bytes;
+        }
+      }
+      /* the payload is written as soon as the row is applied; the slot stays
+       * unreferenced until the transaction commits, so an uncommitted change
+       * can never become visible */
+      if (cells[c].vec) table_write_vector(t, slot, cells[c].vec);
     }
   }
   t->pk[rowid] = (uint64_t)cells[t->pk_idx >= 0 ? t->pk_idx : 0].ival;
@@ -834,10 +939,16 @@ bool store_update_row(db_t *db, table_t *t, uint64_t rowid, const cell_value *ce
       t->strlens[c][rowid] = cells[c].slen;
     } else if (t->cols[c].type == CT_VECTOR) {
       size_t bytes = (size_t)t->dim * sizeof(float);
-      float *copy = (float *)arena_alloc(&db->arena, bytes);
-      if (copy && cells[c].vec) memcpy(copy, cells[c].vec, bytes);
-      t->vecs[c][rowid] = copy;
-      t->vec_slot[rowid] = t->vec_next_slot++;
+      uint64_t slot = t->vec_next_slot++;
+      t->vec_slot[rowid] = slot;
+      if (t->vec_cached) {
+        float *copy = (float *)arena_alloc(&db->arena, bytes);
+        if (copy && cells[c].vec) memcpy(copy, cells[c].vec, bytes);
+        t->vecs[c][rowid] = copy;
+        db->vec_cache_bytes += bytes;
+        t->vec_bytes += bytes;
+      }
+      if (cells[c].vec) table_write_vector(t, slot, cells[c].vec);
     }
   }
   for (int c = 0; c < t->ncols; c++) {

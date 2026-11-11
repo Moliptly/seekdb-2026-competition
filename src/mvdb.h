@@ -231,6 +231,14 @@ typedef struct {
    * transaction that never commits can therefore never change a value. */
   int vec_fd;
   char vec_path[256];
+  bool vec_cached;      /* the vectors of this table are held in memory */
+  uint64_t vec_bytes;   /* the memory used by the cached vectors */
+  /* a small read cache over the payload pool, used when the vectors are not
+   * cached in memory (a table that grew beyond the memory budget) */
+  unsigned char *pool_buf;
+  size_t pool_buf_cap;
+  uint64_t pool_buf_slot;   /* the first slot in the cache */
+  size_t pool_buf_slots;
   uint64_t *vec_slot;    /* [nrows] pool slot of the current vector */
   uint64_t vec_next_slot;
   uint64_t vec_pool_rows;  /* slots physically present in the pool file */
@@ -286,6 +294,10 @@ typedef struct {
   dirty_row *dirty;
   size_t dirty_n, dirty_cap;
 
+  /* the memory budget for the cached vectors */
+  uint64_t vec_cache_limit;
+  uint64_t vec_cache_bytes;
+
   /* reusable scratch buffers for the query path; they are kept between
    * requests so that a query does not allocate (and fault in) a fresh
    * hundred kilobyte buffer every time. */
@@ -313,6 +325,10 @@ typedef struct {
 } cell_value;
 
 table_t *db_find_table(db_t *db, const char *name);
+bool table_pool_read(table_t *t, uint64_t slot, float *dst);
+size_t table_scan_sq(table_t *t, int vcol, const uint8_t *alive, const uint64_t *rows,
+                      size_t nrows, const float *q, int dim, dres_t *out);
+bool table_row_vector(table_t *t, int vcol, uint64_t rowid, float *dst);
 uint64_t store_insert_row(db_t *db, table_t *t, const cell_value *cells);
 bool store_update_row(db_t *db, table_t *t, uint64_t rowid, const cell_value *cells,
                       const bool *mask);
