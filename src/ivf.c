@@ -215,6 +215,14 @@ bool ivf_save_base(db_t *db, table_t *t, ivf_t *ix) {
   if (ok) ok = fdatasync(fd) == 0;
   close(fd);
   if (ok) ok = rename(tmp, ix->base_path) == 0;
+  /* The base file holds every row of the index now: the increment log
+   * starts empty.  A log that still held the entries of an earlier index
+   * would put the rows into their posting lists a second time after the
+   * restart, and a query would report a row twice. */
+  if (ok && ix->log_fd >= 0) {
+    if (ftruncate(ix->log_fd, 0) != 0) ok = false;
+    if (ok && lseek(ix->log_fd, 0, SEEK_END) < 0) ok = false;
+  }
   (void)db;
   (void)t;
   return ok;
@@ -316,6 +324,8 @@ bool ivf_load(db_t *db, table_t *t) {
   if (hdr[0] != IVF_MAGIC || hdr[1] != IVF_VERSION) { close(fd); return false; }
   int nlist = (int)hdr[2], dim = (int)hdr[3];
   if (nlist <= 0 || dim <= 0 || nlist > 4096) { close(fd); return false; }
+  /* An index of another table or of another dimension is not used. */
+  if (t->vec_idx >= 0 && dim != t->dim) { close(fd); return false; }
   ivf_t *ix = (ivf_t *)calloc(1, sizeof(struct ivf));
   if (!ix) { close(fd); return false; }
   ix->nlist = nlist;

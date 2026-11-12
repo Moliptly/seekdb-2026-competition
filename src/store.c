@@ -903,6 +903,15 @@ int db_open(db_t *db, const char *data_dir) {
      * frame boundary so that new writes stay append only. */
     fprintf(stderr, "[mvdb] log recovery stopped early, truncating tail\n");
   }
+  /* The vector index of a table is restored before the database reports
+   * itself ready: a query that arrives right after the handshake has to
+   * find the index of the recovered rows. */
+  for (int i = 0; i < db->ntables; i++) {
+    table_t *t = db->tables[i];
+    if (t->vec_idx >= 0 && !ivf_load(db, t)) {
+      fprintf(stderr, "[mvdb] no vector index for table %llu\n", (unsigned long long)t->id);
+    }
+  }
   return 0;
 }
 

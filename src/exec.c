@@ -709,9 +709,12 @@ static bool exec_select(exectx *c, stmt *st) {
      * only the rows of the probed clusters are scanned. */
     int nprobe = ivf_is_built(t->ivf) ? ivf_nprobe(t->ivf) : 0;
     /* When the calibration had to probe almost every cluster the index does
-     * not pay off and the exact scan is used instead. */
-    bool use_ivf = c->ann_mode && ivf_is_built(t->ivf) && !st->where && nprobe > 0 &&
-                   nprobe * 10 < ivf_nlist(t->ivf) * 9 &&
+     * not pay off and the exact scan is used instead.
+     * A table that does not keep its vectors in memory is scanned exactly:
+     * the vectors of the rows that are not cached are not in the index, so
+     * the index would answer with fewer rows than the exact scan. */
+    bool use_ivf = c->ann_mode && ivf_is_built(t->ivf) && t->vec_cached && !st->where &&
+                   nprobe > 0 && nprobe * 10 < ivf_nlist(t->ivf) * 9 &&
                    t->nrows > ANN_EXACT_ROWS;
     if (use_ivf) {
       size_t cap_rows = (size_t)t->nrows + 1;
@@ -738,34 +741,39 @@ static bool exec_select(exectx *c, stmt *st) {
         probe = probe * 2;
         if (probe > nlist) probe = nlist;
       }
-      int cap = 4096;
-      if (has_limit && limit < cap) cap = (int)limit;
-      if (cap < 1) cap = 1;
-      topk_ent *heap = (topk_ent *)arena_alloc(c->a, (size_t)cap * sizeof(topk_ent));
-      if (!heap) return fail(c, "internal_error", "out of memory");
-      int n = 0;
-      bool desc = st->order_desc;
-      for (size_t i = 0; i < nres; i++) {
-        topk_ent e;
-        e.key = desc ? -res[i].sq : res[i].sq;
-        e.pk = t->pk[res[i].rowid];
-        e.rowid = res[i].rowid;
-        topk_push(heap, &n, cap, &e);
-      }
-      qsort(heap, (size_t)n, sizeof(topk_ent), topk_cmp);
-      for (int i = 0; i < n; i++) {
-        if (has_limit && i >= limit) break;
-        if (!first) ob_putc(body, ',');
-        first = false;
-        ob_putc(body, '[');
-        for (int k = 0; k < nout; k++) {
-          if (k) ob_putc(body, ',');
-          emit_slot(body, t, st, k, heap[i].rowid);
+      /* The index does not know every row of the table: the answer of the
+       * index would then hold fewer rows than the exact one.  The exact scan
+       * answers the query in that case. */
+      if (nres >= need) {
+        int cap = 4096;
+        if (has_limit && limit < cap) cap = (int)limit;
+        if (cap < 1) cap = 1;
+        topk_ent *heap = (topk_ent *)arena_alloc(c->a, (size_t)cap * sizeof(topk_ent));
+        if (!heap) return fail(c, "internal_error", "out of memory");
+        int n = 0;
+        bool desc = st->order_desc;
+        for (size_t i = 0; i < nres; i++) {
+          topk_ent e;
+          e.key = desc ? -res[i].sq : res[i].sq;
+          e.pk = t->pk[res[i].rowid];
+          e.rowid = res[i].rowid;
+          topk_push(heap, &n, cap, &e);
         }
-        ob_putc(body, ']');
+        qsort(heap, (size_t)n, sizeof(topk_ent), topk_cmp);
+        for (int i = 0; i < n; i++) {
+          if (has_limit && i >= limit) break;
+          if (!first) ob_putc(body, ',');
+          first = false;
+          ob_putc(body, '[');
+          for (int k = 0; k < nout; k++) {
+            if (k) ob_putc(body, ',');
+            emit_slot(body, t, st, k, heap[i].rowid);
+          }
+          ob_putc(body, ']');
+        }
+        ob_puts(body, "]");
+        return true;
       }
-      ob_puts(body, "]");
-      return true;
     }
     size_t res_cap = use_all ? (size_t)t->nrows : ncand;
     if (res_cap + 1 > db->scratch_res_cap) {

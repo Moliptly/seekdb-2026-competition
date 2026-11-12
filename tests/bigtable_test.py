@@ -112,6 +112,21 @@ def main() -> int:
         if got != want:
             problems.append(f"filtered: {got[:4]} != {want[:4]}")
 
+        # The index of a table that does not fit into the memory budget must
+        # not answer with fewer rows than the exact scan: the vectors of the
+        # rows that are not cached are not in the index.
+        resp = db.request("CREATE VECTOR INDEX t_vec ON t(e)")
+        if resp.get("ok") is not True:
+            problems.append(f"index: {resp}")
+        sql = (f"SELECT id, L2_DISTANCE(e, '[{fmt(probe)}]') AS d FROM t "
+               f"ORDER BY d LIMIT {k}")
+        exact = db.request(sql, "exact")
+        ann = db.request(sql, "ann")
+        got = [r[0] for r in exact.get("rows", [])]
+        gota = [r[0] for r in ann.get("rows", [])]
+        if gota != got:
+            problems.append(f"ann on a pooled table: {gota[:4]} != {got[:4]}")
+
         db.shutdown()
 
         # the same after a restart
@@ -126,6 +141,10 @@ def main() -> int:
             got = [r[0] for r in exact.get("rows", [])]
             if got != want:
                 problems.append(f"after the restart, probe {n}: {got[:4]} != {want[:4]}")
+            ann = db.request(sql, "ann")
+            gota = [r[0] for r in ann.get("rows", [])]
+            if gota != got:
+                problems.append(f"after the restart, ann probe {n}: {gota[:4]} != {got[:4]}")
         restart = time.time() - started
         db.shutdown()
     finally:
