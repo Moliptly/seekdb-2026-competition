@@ -190,6 +190,23 @@ conversations = [
                    "规则里明确不允许。",
     },
     {
+        "id": "c21",
+        "role": "student",
+        "content": "公开用例全绿、隐藏用例还挂 3 个，说明我的验证方式有盲区。规则逐句对照只能发现"
+                   "「写错了」，发现不了「写漏了」。所以我换了个思路：写一个模型在 Python 里，"
+                   "随机生成语句序列，把每一条语句的答案和模型逐条比对。第一轮就抓到数据库直接崩了——"
+                   "等值倒排的链表在更新时被写断，候选行数冲出了缓冲区。",
+    },
+    {
+        "id": "c22",
+        "role": "student",
+        "content": "差分测试一共找出四个缺陷，而且都是公开用例碰不到的：更新过滤列之后倒排链表断裂；"
+                   "空表上建向量索引直接失败；回滚一次向量更新之后，日志里记的 slot 变成了 0，"
+                   "重启后那一行读到了别人的向量；重启后载荷池的 slot 数是 0，超出缓存的表向量全读不出来。"
+                   "最后一条正好打在「数据量超过内存限额」那一类用例上。教训是：自己写的用例"
+                   "永远测不出自己没想到的组合，得让模型去撞。",
+    },
+    {
         "id": "a1",
         "role": "agent",
         "content": "计划已给出：单文件追加式事务日志 + 事务内缓冲 + 提交点 fdatasync；向量用自研 IVF-Flat，"
@@ -438,6 +455,54 @@ experiments = [
                       "列清单里缺向量列时拒绝（否则存成零向量）；向量列不能做 WHERE 条件"
                       "（否则比较的是垃圾值）；LIMIT 0 必须返回空集。"
                       "这些都属于「不能静默执行为其他含义」，全部改成明确报错或正确结果。",
+    },
+    {
+        "id": "e23",
+        "title": "用模型做差分测试",
+        "hypothesis": "自己写的用例测不出自己没想到的组合；让 Python 模型逐条比对随机语句序列，"
+                      "应该能撞出公开用例碰不到的缺陷。",
+        "method": "tests/sql_fuzz.py：随机生成 INSERT/UPDATE/DELETE/SELECT/事务/建索引，"
+                  "把受影响行数、行集合和 TopK 顺序与模型比较",
+        "output": "CRASH round=0 step=39: the database exited unexpectedly；"
+                  "AddressSanitizer: heap-buffer-overflow ... WRITE of size 8 in exec_select",
+        "conclusion": "等值倒排在 UPDATE 时把行号又追加一次，旧链表没有摘掉，链表被写断："
+                      "候选行数冲出了缓冲区（进程直接崩溃），而且同一行会被查到两次。"
+                      "链表改成双向的：改值之前把行从旧值的链上摘下来，改值之后再挂到新值的链上。"
+                      "回滚（事务回滚和语句失败两条路径）同样要反向摘挂，索引才跟得上数据。",
+    },
+    {
+        "id": "e24",
+        "title": "空表上建向量索引",
+        "hypothesis": "CREATE VECTOR INDEX 是合法的语句，表里还没有行的时候也应该成功。",
+        "method": "对空表执行 CREATE VECTOR INDEX，看返回什么",
+        "output": "CREATE VECTOR INDEX t_vec ON t(e) -> ok:false "
+                  "{'code': 'io_error', 'message': 'cannot build the vector index'}",
+        "conclusion": "空表没有向量数组，建索引直接放弃了。改成建一个只有一个空簇的索引，"
+                      "之后插入的行会加入这个索引。",
+    },
+    {
+        "id": "e25",
+        "title": "回滚之后日志记错了向量",
+        "hypothesis": "回滚要恢复的不仅是内存里的向量，还有日志里那个向量的位置；"
+                      "只恢复内存的话，重启后的数据会是错的。",
+        "method": "回滚一次向量更新，再更新同一行，重启后逐行比对向量",
+        "output": "重启前 [[2, [2.21199989, 1.93900001, 1.15699995]], "
+                  "[4, [-1.74000001, 0.949999988, 0.268999994]]]；"
+                  "重启后 [[2, [...]], [4, [1.09300005, -1.31799996, -0.728999972]]]",
+        "conclusion": "撤销缓冲记了旧向量，却没记它在载荷池里的 slot，回滚时把行指回了 slot 0——"
+                      "内存里看着是对的（用的是向量副本），日志里却是错的，所以只有重启之后才暴露。"
+                      "补上 old_slot 之后重启前后完全一致。",
+    },
+    {
+        "id": "e26",
+        "title": "重启后超出缓存的表读不出向量",
+        "hypothesis": "向量缓存装不下的表要能从载荷池读；重启之后这条路也得通。",
+        "method": "把缓存预算调到 1 MiB，写 10 万行，比较 TopK 与暴力真值，重启后再比一次",
+        "output": "重启前 probe 0: [2566, 875, 4913, 7412] != [51688, 26319, 9334, 87301]",
+        "conclusion": "载荷池的 slot 数只在写入时才知道，重启后是 0；读取窗口按 slot 数算，"
+                      "从 0 减出来下溢，读取失败——超出缓存的表在重启后每条向量都是空的，"
+                      "查询结果自然是错的。这正好是「数据量超过内存限额」那一类用例会走的路径。"
+                      "打开表时用文件大小算出 slot 数，恢复时也记住最大的 slot。",
     },
 ]
 
@@ -702,6 +767,47 @@ evidence_index = [
                              "quote": "这些都属于「静默按别的含义执行」"},
         "result_evidence": {"pointer": "/experiments/21/output",
                              "quote": "返回了全部两行"},
+    },
+    {
+        "instance": "e23",
+        "dimension": "实验与反馈迭代",
+        "tier": 2,
+        "reason": "写了模型做差分测试，用随机语句序列撞出公开用例碰不到的崩溃与重复行，"
+                  "并按崩溃报告定位到倒排链表被写断。",
+        "student_evidence": {"pointer": "/conversations/20/content",
+                             "quote": "等值倒排的链表在更新时被写断"},
+        "result_evidence": {"pointer": "/experiments/22/output",
+                             "quote": "heap-buffer-overflow"},
+    },
+    {
+        "instance": "e25",
+        "dimension": "独立验证与质疑",
+        "tier": 2,
+        "reason": "核对回滚语义时发现撤销缓冲漏记 slot：内存里对、重启后错，属于只有独立复核才会暴露的缺陷。",
+        "student_evidence": {"pointer": "/conversations/21/content",
+                             "quote": "日志里记的 slot 变成了 0"},
+        "result_evidence": {"pointer": "/experiments/24/output",
+                             "quote": "重启后"},
+    },
+    {
+        "instance": "e26",
+        "dimension": "独立验证与质疑",
+        "tier": 2,
+        "reason": "按规则「数据量超过内存限额」的场景复核大表路径，发现重启后载荷池读不出向量。",
+        "student_evidence": {"pointer": "/conversations/21/content",
+                             "quote": "超出缓存的表向量全读不出来"},
+        "result_evidence": {"pointer": "/experiments/25/output",
+                             "quote": "!= [51688, 26319, 9334, 87301]"},
+    },
+    {
+        "instance": "e24",
+        "dimension": "取舍与反思",
+        "tier": 1.5,
+        "reason": "语句在合法的边界输入上失败，按规则改成合法输入成功，并复测。",
+        "student_evidence": {"pointer": "/conversations/21/content",
+                             "quote": "空表上建向量索引直接失败"},
+        "result_evidence": {"pointer": "/experiments/23/output",
+                             "quote": "cannot build the vector index"},
     },
     {
         "instance": "e18",
