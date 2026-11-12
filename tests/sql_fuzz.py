@@ -87,15 +87,16 @@ def main() -> int:
         next_id = 1
         steps = 0
 
-        def check(name, got, want):
+        def check(name, got, want, detail=""):
             if got != want:
-                failures.append(f"round {round_no} step {steps} {name}: got {got!r} want {want!r}")
+                failures.append(f"round {round_no} step {steps} {name}: got {got!r} want {want!r} {detail}")
 
         while steps < 40:
             steps += 1
             action = rng.choice(["insert", "insert", "update", "delete", "select",
-                                  "select", "select_filtered", "topk", "txn_commit",
-                                  "txn_rollback"])
+                                  "select", "select_filtered", "topk", "topk_filtered",
+                                  "update_where", "delete_where", "vector_index",
+                                  "txn_commit", "txn_rollback"])
             if action == "insert":
                 n = rng.randint(1, 4)
                 ids = []
@@ -146,6 +147,34 @@ def main() -> int:
                     raise SystemExit(2)
                 check("select_filtered", [r[0] for r in resp.get("rows", [])],
                       model.matching(("cat", "=", cat)))
+            elif action == "topk_filtered":
+                k = rng.randint(1, 5)
+                probe = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]
+                cat = rng.choice(["a", "b", "c"])
+                resp = db.request(f"SELECT id, L2_DISTANCE(e, '[{fmt(probe)}]') AS d "
+                                  f"FROM t WHERE cat = '{cat}' ORDER BY d LIMIT {k}")
+                rows = sorted(model.matching(("cat", "=", cat)),
+                               key=lambda i: (distance(model.rows[i][1], probe), i))[:k]
+                check("topk_filtered", [r[0] for r in resp.get("rows", [])], rows)
+            elif action == "update_where":
+                cat = rng.choice(["a", "b", "c"])
+                newcat = rng.choice(["a", "b", "c"])
+                resp = db.request(f"UPDATE t SET cat = '{newcat}' WHERE cat = '{cat}'")
+                hit = model.matching(("cat", "=", cat))
+                check("update_where", resp.get("affected_rows"), len(hit))
+                for i in hit:
+                    model.rows[i] = (newcat, model.rows[i][1])
+            elif action == "delete_where":
+                cat = rng.choice(["a", "b", "c"])
+                resp = db.request(f"DELETE FROM t WHERE cat = '{cat}'")
+                hit = model.matching(("cat", "=", cat))
+                check("delete_where", resp.get("affected_rows"), len(hit))
+                for i in hit:
+                    del model.rows[i]
+            elif action == "vector_index":
+                resp = db.request("CREATE VECTOR INDEX t_vec ON t(e)")
+                check("vector_index", resp.get("ok"), True,
+                      str(resp.get("error", {}))[:90])
             elif action == "topk":
                 k = rng.randint(1, 5)
                 probe = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]

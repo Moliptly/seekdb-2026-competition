@@ -72,6 +72,10 @@ static void ivf_init_centroids(ivf_t *ix, const float **vecs, const uint64_t *ro
                                 size_t n, uint32_t seed) {
   int nlist = ix->nlist;
   uint32_t s = seed ? seed : 1;
+  if (n == 0) {
+    memset(ix->centroids, 0, (size_t)nlist * ix->dim * sizeof(float));
+    return;
+  }
   for (int c = 0; c < nlist; c++) {
     /* a deterministic stride walk over the rows */
     s = s * 1664525u + 1013904223u;
@@ -133,12 +137,16 @@ bool ivf_build(db_t *db, table_t *t, int col, uint32_t seed) {
     if (t->alive[r] && t->vecs[col][r]) rows[n++] = r;
   }
   const float **vecs = (const float **)t->vecs[col];
-  if (!vecs) { free(rows); return false; }
+  /* An empty table has no vector array at all: the index is then built with
+   * a single empty cluster. */
+  if (!vecs && n > 0) { free(rows); return false; }
 
   int nlist = (int)(sqrt((double)n) + 0.5);
   if (nlist < 1) nlist = 1;
   if (nlist > 4096) nlist = 4096;
-  if (nlist > (int)n) nlist = (int)n;
+  /* An empty table gets an index with a single empty cluster: the statement
+   * is valid, there is simply nothing to index yet. */
+  if (n > 0 && nlist > (int)n) nlist = (int)n;
   if (nlist < 1) { free(rows); return false; }
 
   ivf_t *ix = (ivf_t *)calloc(1, sizeof(struct ivf));
