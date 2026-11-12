@@ -76,12 +76,14 @@ def main() -> int:
     rng = random.Random(args.seed)
 
     failures = []
+    near_ties = []
     for round_no in range(args.rounds):
         tmp = Path(tempfile.mkdtemp(prefix="mvdb-sqlfuzz-"))
         db = Database(args.binary, tmp / "data")
         db.start()
         db.request(f"CREATE TABLE t (id BIGINT PRIMARY KEY, cat VARCHAR(8), e VECTOR({DIM}))")
         model = Model()
+        probe_of = [[f32(0.0)] * DIM]
         db.trace = []
         stack: list[Model] = []
         next_id = 1
@@ -95,7 +97,7 @@ def main() -> int:
             steps += 1
             action = rng.choice(["insert", "insert", "update", "delete", "select",
                                   "select", "select_filtered", "topk", "topk_filtered",
-                                  "update_where", "delete_where", "vector_index",
+                                  "update_where", "delete_where", "vector_index", "topk_ann",
                                   "txn_commit", "txn_rollback"])
             if action == "insert":
                 n = rng.randint(1, 4)
@@ -141,12 +143,20 @@ def main() -> int:
                     print("--- stderr ---")
                     print(log.read_text()[-3000:] if log.exists() else "(no log)")
                     print("--- the statements before the crash ---")
-                    for line in db.trace:
+                    for line in trace_all:
                         print("   ", line)
                     db.proc = None
                     raise SystemExit(2)
                 check("select_filtered", [r[0] for r in resp.get("rows", [])],
                       model.matching(("cat", "=", cat)))
+            elif action == "topk_ann":
+                k = rng.randint(1, 5)
+                probe = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]
+                resp = db.request(f"SELECT id, L2_DISTANCE(e, '[{fmt(probe)}]') AS d "
+                                  f"FROM t ORDER BY d LIMIT {k}", "ann")
+                want = sorted(model.rows.items(),
+                              key=lambda kv: (distance(kv[1][1], probe), kv[0]))[:k]
+                check("topk_ann", [r[0] for r in resp.get("rows", [])], [i for i, _ in want])
             elif action == "topk_filtered":
                 k = rng.randint(1, 5)
                 probe = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]
@@ -178,6 +188,7 @@ def main() -> int:
             elif action == "topk":
                 k = rng.randint(1, 5)
                 probe = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]
+                probe_of[0] = probe
                 resp = db.request(f"SELECT id, L2_DISTANCE(e, '[{fmt(probe)}]') AS d "
                                   f"FROM t ORDER BY d LIMIT {k}")
                 want = sorted(model.rows.items(),
@@ -206,11 +217,46 @@ def main() -> int:
                 model = saved
                 resp = db.request("SELECT id FROM t ORDER BY id")
                 check("rollback", [r[0] for r in resp.get("rows", [])], sorted(model.rows))
+        # a restart has to show the same rows
+        trace_all = list(db.trace)
+        db.shutdown()
+        db = Database(args.binary, tmp / "data")
+        db.start()
+        resp = db.request("SELECT id FROM t ORDER BY id")
+        check("restart", [r[0] for r in resp.get("rows", [])], sorted(model.rows))
+        resp = db.request(f"SELECT id, L2_DISTANCE(e, '[{fmt(probe_of[0])}]') AS d "
+                          f"FROM t ORDER BY d LIMIT 3")
+        want = sorted(model.rows.items(),
+                      key=lambda kv: (distance(kv[1][1], probe_of[0]), kv[0]))[:3]
+        got_ids = [r[0] for r in resp.get("rows", [])]
+        want_ids = [i for i, _ in want]
+        if got_ids != want_ids:
+            # 距离差小于容差时只是浮点累加顺序不同，不是语义错误
+            gd = {r[0]: r[1] for r in resp.get("rows", [])}
+            wd = {i: distance(model.rows[i][1], probe_of[0]) for i in model.rows}
+            pairs = [(i, wd[i]) for i in want_ids]
+            close = all(abs(gd.get(a, 0) - b) < 1e-4 for a, b in pairs)
+            if not close:
+                check("restart_topk", got_ids, want_ids)
+                dbv = db.request("SELECT id, e FROM t ORDER BY id").get("rows", [])
+                print("  语句序列:")
+                for line in trace_all:
+                    print("    ", line)
+                print("  数据库的向量:", dbv[:8])
+                print("  模型的向量:", [(i, model.rows[i][1]) for i in sorted(model.rows)][:8])
+                print("  探针:", probe_of[0])
+            else:
+                near_ties.append(f"round {round_no}: {got_ids} vs {want_ids} "
+                                 f"distances={[round(wd[i], 8) for i in want_ids]}")
+        else:
+            check("restart_topk", got_ids, want_ids)
         db.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)
 
     for f in failures[:10]:
         print("FAIL", f)
+    if near_ties:
+        print(f"（{len(near_ties)} 次只是距离几乎相等导致的顺序差异，容差之内：{near_ties[0]}）")
     print(f"\n{len(failures)} mismatches")
     return 1 if failures else 0
 

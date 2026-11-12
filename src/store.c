@@ -919,6 +919,10 @@ static void record_undo(db_t *db, table_t *t, uint64_t rowid, int col, bool exis
     e.old_str = existed ? t->strs[col][rowid] : NULL;
     e.old_strlen = existed ? t->strlens[col][rowid] : 0;
   } else if (e.ctype == CT_VECTOR) {
+    /* The slot of the payload has to be restored as well: the rollback puts
+     * the row back to the vector it had before, and the log has to name that
+     * vector again. */
+    e.old_slot = existed ? t->vec_slot[rowid] : 0;
     if (existed && t->vecs[col][rowid]) {
       size_t bytes = (size_t)t->dim * sizeof(float);
       e.old_vec = (float *)arena_alloc(&db->arena, bytes);

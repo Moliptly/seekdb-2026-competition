@@ -93,6 +93,34 @@ def test_crash_during_a_statement(binary: str, tmp: Path):
           f"{len(ids)} rows")
 
 
+def test_rollback_of_a_vector_survives_the_restart(binary: str, tmp: Path):
+    """A rolled back vector update has to name the same vector in the log.
+
+    The rollback puts the row back to its old vector; the log has to name
+    that vector, otherwise the row reads the vector of another row after the
+    restart.
+    """
+    data = tmp / "vecrollback"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR(2))")
+    db.request("INSERT INTO t VALUES (1, '[1,0]'), (2, '[0,1]')")
+    db.request("BEGIN")
+    db.request("UPDATE t SET e = '[9,9]' WHERE id = 2")
+    db.request("ROLLBACK")
+    db.request("UPDATE t SET e = '[5,5]' WHERE id = 2")
+    before = db.request("SELECT id, e FROM t ORDER BY id").get("rows")
+    db.shutdown()
+
+    db = Database(binary, data)
+    db.start()
+    after = db.request("SELECT id, e FROM t ORDER BY id").get("rows")
+    db.shutdown()
+    ok = before == after and after == [[1, [1.0, 0.0]], [2, [5.0, 5.0]]]
+    check("a rolled back vector update survives the restart", ok,
+          f"before={before} after={after}")
+
+
 def test_committed_survives(binary: str, tmp: Path):
     """A committed insert is still there after SIGKILL."""
     data = tmp / "committed"
@@ -224,6 +252,7 @@ def main() -> int:
     try:
         test_batches_survive(binary, tmp)
         test_crash_during_a_statement(binary, tmp)
+        test_rollback_of_a_vector_survives_the_restart(binary, tmp)
         test_committed_survives(binary, tmp)
         test_uncommitted_is_lost(binary, tmp)
         test_no_partial_statement(binary, tmp)
