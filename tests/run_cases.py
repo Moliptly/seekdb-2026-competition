@@ -135,6 +135,18 @@ class Database:
         self.proc = None
 
 
+def must(db: Database, sql: str, mode: str = "exact"):
+    """Runs a statement that has to succeed.
+
+    A setup statement that fails silently makes the rest of the test
+    meaningless, so the tests use this instead of a bare request().
+    """
+    resp = db.request(sql, mode)
+    if resp.get("ok") is not True:
+        raise RuntimeError(f"the statement failed: {sql!r} -> {resp!r}")
+    return resp
+
+
 def check_case(binary: str, case: dict, package: Path, keep: bool = False) -> tuple[bool, str]:
     test_path = package / case["test"]
     result_path = package / case["result"]
