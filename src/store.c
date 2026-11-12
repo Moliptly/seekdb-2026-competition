@@ -516,10 +516,16 @@ void txn_rollback(db_t *db) {
     uint64_t rowid = e->rowid;
     if (rowid >= t->nrows) continue;
     if (e->ctype == CT_BIGINT) {
+      /* The row leaves the list of the value it has now and joins the list of
+       * the value it gets back, so that the index follows the rollback. */
+      eqidx_detach(t, e->col, rowid);
       t->ints[e->col][rowid] = e->old_int;
+      eqidx_add(t, e->col, rowid);
     } else if (e->ctype == CT_VARCHAR) {
+      eqidx_detach(t, e->col, rowid);
       t->strs[e->col][rowid] = e->old_str;
       t->strlens[e->col][rowid] = e->old_strlen;
+      eqidx_add(t, e->col, rowid);
     } else if (e->ctype == CT_VECTOR) {
       t->vecs[e->col][rowid] = e->old_vec;
       t->vec_slot[rowid] = e->old_slot;
@@ -974,6 +980,12 @@ bool store_update_row(db_t *db, table_t *t, uint64_t rowid, const cell_value *ce
   for (int c = 0; c < t->ncols; c++) {
     if (!mask[c]) continue;
     record_undo(db, t, rowid, c, true);
+    /* The row leaves the list of its old value before the value changes:
+     * a row that stays in the list of the old value would be found twice
+     * and the chain of the list would be broken. */
+    if (t->cols[c].type == CT_VARCHAR || t->cols[c].type == CT_BIGINT) {
+      eqidx_detach(t, c, rowid);
+    }
     if (t->cols[c].type == CT_BIGINT) {
       t->ints[c][rowid] = cells[c].ival;
     } else if (t->cols[c].type == CT_VARCHAR) {

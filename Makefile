@@ -75,6 +75,7 @@ fuzz: $(BIN)
 	python3 tests/ann_fuzz.py --binary ./$(BIN) --rounds 120 --large 12000
 	python3 tests/topk_fuzz.py --binary ./$(BIN) --rounds 120
 	python3 tests/index_maintenance_test.py --binary ./$(BIN)
+	python3 tests/sql_fuzz.py --binary ./$(BIN) --rounds 40
 
 # The same tests with the address and undefined behaviour sanitizers.
 asan: $(SRC) $(HDR)

@@ -81,12 +81,21 @@ static void eqidx_append(eqidx_t *ix, uint32_t slot, uint64_t rowid) {
   if (rowid >= ix->nexts_cap) {
     uint64_t cap = ix->nexts_cap ? ix->nexts_cap : 64;
     while (cap <= rowid) cap *= 2;
-    ix->nexts = (uint64_t *)realloc(ix->nexts, (size_t)cap * sizeof(uint64_t));
-    if (!ix->nexts) { ix->nexts_cap = 0; return; }
-    for (uint64_t i = ix->nexts_cap; i < cap; i++) ix->nexts[i] = UINT64_MAX;
+    uint64_t *n = (uint64_t *)realloc(ix->nexts, (size_t)cap * sizeof(uint64_t));
+    if (!n) { ix->nexts_cap = 0; return; }
+    ix->nexts = n;
+    uint64_t *p = (uint64_t *)realloc(ix->prevs, (size_t)cap * sizeof(uint64_t));
+    if (!p) { ix->nexts_cap = 0; return; }
+    ix->prevs = p;
+    for (uint64_t i = ix->nexts_cap; i < cap; i++) {
+      ix->nexts[i] = UINT64_MAX;
+      ix->prevs[i] = UINT64_MAX;
+    }
     ix->nexts_cap = cap;
   }
   ix->nexts[rowid] = ix->heads[slot];
+  ix->prevs[rowid] = UINT64_MAX;
+  if (ix->heads[slot] != UINT64_MAX) ix->prevs[ix->heads[slot]] = rowid;
   ix->heads[slot] = rowid;
 }
 
@@ -132,6 +141,34 @@ void eqidx_build(table_t *t, int col) {
   ix->built = true;
 }
 
+/* Removes a row id from the list of a value.  The list is doubly linked, so
+ * the row is detached in constant time. */
+static void eqidx_unlink(eqidx_t *ix, uint32_t slot, uint64_t rowid) {
+  if (rowid >= ix->nexts_cap) return;
+  uint64_t prev = ix->prevs ? ix->prevs[rowid] : UINT64_MAX;
+  uint64_t next = ix->nexts[rowid];
+  if (prev != UINT64_MAX && prev < ix->nexts_cap) {
+    ix->nexts[prev] = next;
+  } else {
+    ix->heads[slot] = next;
+  }
+  if (next != UINT64_MAX && next < ix->nexts_cap && ix->prevs) ix->prevs[next] = prev;
+  ix->nexts[rowid] = UINT64_MAX;
+  if (ix->prevs) ix->prevs[rowid] = UINT64_MAX;
+}
+
+void eqidx_detach(table_t *t, int col, uint64_t rowid) {
+  if (col < 0 || col >= t->ncols || !t->eqidx) return;
+  eqidx_t *ix = &t->eqidx[col];
+  if (!ix->built || !ix->keys) return;
+  char buf[32];
+  size_t len = 0;
+  const char *key = row_key(t, col, rowid, buf, sizeof(buf), &len);
+  uint32_t slot = eqidx_slot(ix, key, len, false);
+  if (slot == ix->mask && !ix->keys[slot]) return;
+  eqidx_unlink(ix, slot, rowid);
+}
+
 void eqidx_add(table_t *t, int col, uint64_t rowid) {
   if (col < 0 || col >= t->ncols || !t->eqidx) return;
   eqidx_t *ix = &t->eqidx[col];
@@ -173,6 +210,7 @@ void eqidx_free(table_t *t) {
       free(ix->heads);
     }
     free(ix->nexts);
+    free(ix->prevs);
   }
   free(t->eqidx);
   t->eqidx = NULL;

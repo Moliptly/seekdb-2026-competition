@@ -290,6 +290,48 @@ def test_keyword_as_column_name(binary, tmp):
           where.get("rows") == [[1]], repr(where.get("rows")))
 
 
+def test_filtered_column_update(binary, tmp):
+    """A row whose filtered column changes moves to the list of its new
+    value; it must not be found twice and the list must not be broken."""
+    data = tmp / "eqmove"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, cat VARCHAR(8), e VECTOR(2))")
+    vals = ",".join(f"({i}, 'c{i % 3}', '[{i}.0,0.0]')" for i in range(1, 31))
+    db.request(f"INSERT INTO t VALUES {vals}")
+    # the index is built by the first filtered query
+    before = db.request("SELECT id FROM t WHERE cat = 'c1' ORDER BY id")
+    db.request("UPDATE t SET cat = 'c2' WHERE id = 1")
+    after1 = db.request("SELECT id FROM t WHERE cat = 'c1' ORDER BY id")
+    after2 = db.request("SELECT id FROM t WHERE cat = 'c2' ORDER BY id")
+    db.shutdown()
+    ids1 = [r[0] for r in after1.get("rows", [])]
+    ids2 = [r[0] for r in after2.get("rows", [])]
+    check("an updated row leaves the list of its old value",
+          1 not in ids1 and len(ids1) == len(before.get("rows", [])) - 1,
+          f"before={len(before.get('rows', []))} after={ids1}")
+    check("an updated row joins the list of its new value",
+          ids2.count(1) == 1 and 1 in ids2, repr(ids2[:6]))
+
+
+def test_filtered_column_rollback(binary, tmp):
+    """A rollback puts the row back into the list of its old value."""
+    data = tmp / "eqrollback"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, cat VARCHAR(8), e VECTOR(2))")
+    vals = ",".join(f"({i}, 'c{i % 3}', '[{i}.0,0.0]')" for i in range(1, 31))
+    db.request(f"INSERT INTO t VALUES {vals}")
+    before = [r[0] for r in db.request("SELECT id FROM t WHERE cat = 'c1' ORDER BY id").get("rows", [])]
+    db.request("BEGIN")
+    db.request("UPDATE t SET cat = 'c9' WHERE id = 4")
+    db.request("ROLLBACK")
+    after = [r[0] for r in db.request("SELECT id FROM t WHERE cat = 'c1' ORDER BY id").get("rows", [])]
+    db.shutdown()
+    check("a rollback restores the row in the list of its old value",
+          after == before, f"before={before} after={after}")
+
+
 def test_unsupported_statements(binary, tmp):
     """Unsupported statements fail but never kill the process."""
     data = tmp / "unsupported"
@@ -533,6 +575,8 @@ def main() -> int:
         test_limit_zero(binary, tmp)
         test_escaped_quote(binary, tmp)
         test_keyword_as_column_name(binary, tmp)
+        test_filtered_column_update(binary, tmp)
+        test_filtered_column_rollback(binary, tmp)
         test_unsupported_statements(binary, tmp)
         test_ordering_of_plain_columns(binary, tmp)
         test_varchar_length(binary, tmp)

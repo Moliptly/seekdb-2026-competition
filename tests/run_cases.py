@@ -90,6 +90,10 @@ class Database:
         return line.decode("utf-8")
 
     def request(self, sql: str | None = None, mode: str = "exact", op: str = "execute"):
+        if not hasattr(self, "trace"):
+            self.trace = []
+        if sql is not None:
+            self.trace.append(sql)
         assert self.proc and self.proc.stdin
         self.seq += 1
         req = {"id": self.seq, "op": op}

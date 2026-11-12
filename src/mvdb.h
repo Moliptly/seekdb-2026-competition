@@ -191,6 +191,7 @@ typedef struct {
   uint32_t *keylens;
   uint64_t *heads;    /* the first row id of each list */
   uint64_t *nexts;    /* the next row id, indexed by row id */
+  uint64_t *prevs;    /* the previous row id, so that a row can be detached */
   uint64_t nexts_cap;
 } eqidx_t;
 
@@ -349,6 +350,10 @@ bool store_lookup_pk(table_t *t, int64_t pk, uint64_t *rowid);
 /* equality posting index */
 void eqidx_build(table_t *t, int col);
 void eqidx_add(table_t *t, int col, uint64_t rowid);
+/* Removes the row from the list of its current value.  It has to be called
+ * before the value changes, otherwise the row would stay in the list of the
+ * old value and the chain of the list would be broken. */
+void eqidx_detach(table_t *t, int col, uint64_t rowid);
 uint64_t eqidx_head(table_t *t, int col, const char *value, size_t len);
 uint64_t eqidx_next(table_t *t, int col, uint64_t rowid);
 void eqidx_free(table_t *t);

@@ -220,10 +220,16 @@ static void undo_range(db_t *db, size_t from, size_t to) {
     if (!t || e->rowid >= t->nrows) continue;
     uint64_t rowid = e->rowid;
     if (e->ctype == CT_BIGINT) {
+      /* The row leaves the list of the value it has now and joins the list of
+       * the value it gets back, so that the index follows the rollback. */
+      eqidx_detach(t, e->col, rowid);
       t->ints[e->col][rowid] = e->old_int;
+      eqidx_add(t, e->col, rowid);
     } else if (e->ctype == CT_VARCHAR) {
+      eqidx_detach(t, e->col, rowid);
       t->strs[e->col][rowid] = e->old_str;
       t->strlens[e->col][rowid] = e->old_strlen;
+      eqidx_add(t, e->col, rowid);
     } else if (e->ctype == CT_VECTOR) {
       t->vecs[e->col][rowid] = e->old_vec;
       t->vec_slot[rowid] = e->old_slot;
@@ -302,6 +308,16 @@ static bool exec_create_index(exectx *c, stmt *st) {
 }
 
 /* Converts a literal into a column value. */
+/* The number of unicode code points of a UTF-8 string: the length of a
+ * VARCHAR is counted in characters, not in bytes. */
+static size_t utf8_codepoints(const char *s, uint32_t len) {
+  size_t n = 0;
+  for (uint32_t i = 0; i < len; i++) {
+    if (((unsigned char)s[i] & 0xC0) != 0x80) n++;
+  }
+  return n;
+}
+
 static bool literal_to_cell(exectx *c, table_t *t, int col, const expr *e, cell_value *out) {
   memset(out, 0, sizeof(*out));
   switch (t->cols[col].type) {
@@ -331,6 +347,13 @@ static bool literal_to_cell(exectx *c, table_t *t, int col, const expr *e, cell_
         out->slen = (uint32_t)n;
       } else {
         return fail(c, "invalid_value", "value type does not match column '%s'", t->cols[col].name);
+      }
+      /* The declared length is the number of characters the column holds.  A
+       * longer value is refused instead of being stored truncated, the
+       * length is counted in code points and not in bytes. */
+      if (utf8_codepoints(out->sval, out->slen) > (size_t)t->cols[col].vlen) {
+        return fail(c, "invalid_value", "the value is longer than the %d characters of column '%s'",
+                    t->cols[col].vlen, t->cols[col].name);
       }
       return true;
     case CT_VECTOR:
