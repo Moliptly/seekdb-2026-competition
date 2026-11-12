@@ -121,6 +121,33 @@ def test_rollback_of_a_vector_survives_the_restart(binary: str, tmp: Path):
           f"before={before} after={after}")
 
 
+def test_pool_backed_table_survives_the_restart(binary: str, tmp: Path):
+    """A table whose vectors do not fit into the cache has to answer with the
+    vectors of the payload pool after the restart as well."""
+    import os
+    os.environ["MVDB_VEC_CACHE_MB"] = "1"     # a small budget: the pool is used
+    data = tmp / "pooled"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR(8))")
+    values = []
+    for i in range(1, 40001):
+        vec = ",".join(f"{i * 0.001 + j * 0.01:.4f}" for j in range(8))
+        values.append(f"({i}, '[{vec}]')")
+    for start in range(0, len(values), 1000):
+        db.request(f"INSERT INTO t VALUES {','.join(values[start:start + 1000])}")
+    before = db.request("SELECT e FROM t WHERE id = 39000").get("rows")
+    db.shutdown()
+
+    db = Database(binary, data)
+    db.start()
+    after = db.request("SELECT e FROM t WHERE id = 39000").get("rows")
+    db.shutdown()
+    ok = before == after and bool(after) and bool(after[0][0])
+    check("a table that is read from the pool survives the restart", ok,
+          f"before={before} after={after}")
+
+
 def test_committed_survives(binary: str, tmp: Path):
     """A committed insert is still there after SIGKILL."""
     data = tmp / "committed"
@@ -253,6 +280,7 @@ def main() -> int:
         test_batches_survive(binary, tmp)
         test_crash_during_a_statement(binary, tmp)
         test_rollback_of_a_vector_survives_the_restart(binary, tmp)
+        test_pool_backed_table_survives_the_restart(binary, tmp)
         test_committed_survives(binary, tmp)
         test_uncommitted_is_lost(binary, tmp)
         test_no_partial_statement(binary, tmp)

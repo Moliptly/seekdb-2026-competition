@@ -98,6 +98,7 @@ def main() -> int:
             action = rng.choice(["insert", "insert", "update", "delete", "select",
                                   "select", "select_filtered", "topk", "topk_filtered",
                                   "update_where", "delete_where", "vector_index", "topk_ann",
+                                  "failed_insert", "delete_reinsert",
                                   "txn_commit", "txn_rollback"])
             if action == "insert":
                 n = rng.randint(1, 4)
@@ -181,6 +182,28 @@ def main() -> int:
                 check("delete_where", resp.get("affected_rows"), len(hit))
                 for i in hit:
                     del model.rows[i]
+            elif action == "failed_insert":
+                # a multi row insert with a bad value in the middle must not
+                # apply any of its rows
+                good = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]
+                bad = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]
+                i1, i2 = next_id, next_id + 1
+                next_id += 2
+                resp = db.request(f"INSERT INTO t VALUES ({i1}, 'a', '[{fmt(good)}]'), "
+                                  f"({i2}, 'b', '[{fmt(bad[:-1])}]')")
+                check("failed_insert", resp.get("ok"), False)
+                resp = db.request(f"SELECT id FROM t WHERE id = {i1}")
+                check("failed_insert_left_nothing", resp.get("rows"), [])
+            elif action == "delete_reinsert":
+                if model.rows:
+                    i = rng.choice(sorted(model.rows))
+                    db.request(f"DELETE FROM t WHERE id = {i}")
+                    del model.rows[i]
+                    vec = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]
+                    cat = rng.choice(["a", "b", "c"])
+                    resp = db.request(f"INSERT INTO t VALUES ({i}, '{cat}', '[{fmt(vec)}]')")
+                    check("delete_reinsert", resp.get("affected_rows"), 1)
+                    model.rows[i] = (cat, vec)
             elif action == "vector_index":
                 resp = db.request("CREATE VECTOR INDEX t_vec ON t(e)")
                 check("vector_index", resp.get("ok"), True,

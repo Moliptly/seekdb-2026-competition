@@ -240,6 +240,13 @@ static int table_open_vector_file(db_t *db, table_t *t) {
   int fd = open(t->vec_path, O_RDWR | O_CREAT, 0644);
   if (fd < 0) return -1;
   t->vec_fd = fd;
+  /* The number of slots the pool holds decides how much of it can be read at
+   * once; after a restart it is the size of the file. */
+  struct stat st;
+  if (fstat(fd, &st) == 0 && st.st_size > 0) {
+    size_t bytes = (size_t)t->dim * sizeof(float);
+    if (bytes) t->vec_pool_rows = (uint64_t)(st.st_size / bytes);
+  }
   return 0;
 }
 
@@ -724,6 +731,7 @@ static void recover_row(db_t *db, uint8_t type, const unsigned char *p, size_t l
   if (t->vec_idx >= 0) {
     t->vec_slot[rowid] = slot;
     if (slot + 1 > t->vec_next_slot) t->vec_next_slot = slot + 1;
+    if (slot + 1 > t->vec_pool_rows) t->vec_pool_rows = slot + 1;
     size_t bytes = (size_t)t->dim * sizeof(float);
     if (db->vec_cache_bytes + bytes > db->vec_cache_limit) {
       t->vec_cached = false;
