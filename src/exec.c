@@ -234,7 +234,14 @@ static void undo_range(db_t *db, size_t from, size_t to) {
       t->vecs[e->col][rowid] = e->old_vec;
       t->vec_slot[rowid] = e->old_slot;
     }
-    if (!e->existed) {
+    if (e->deleted) {
+      /* the row was removed by this statement: it comes back */
+      if (!t->alive[rowid]) {
+        t->alive[rowid] = 1;
+        t->nlive++;
+        if (t->pk_idx >= 0) store_insert_pk(t, t->pk[rowid], rowid);
+      }
+    } else if (!e->existed) {
       if (t->alive[rowid]) {
         t->alive[rowid] = 0;
         t->nlive--;

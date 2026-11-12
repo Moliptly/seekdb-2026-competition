@@ -537,7 +537,14 @@ void txn_rollback(db_t *db) {
       t->vecs[e->col][rowid] = e->old_vec;
       t->vec_slot[rowid] = e->old_slot;
     }
-    if (!e->existed) {
+    if (e->deleted) {
+      /* the row was removed by this transaction: it comes back */
+      if (!t->alive[rowid]) {
+        t->alive[rowid] = 1;
+        t->nlive++;
+        if (t->pk_idx >= 0) pkmap_put(t, t->pk[rowid], rowid);
+      }
+    } else if (!e->existed) {
       /* the row was created by this transaction: remove it again */
       if (t->alive[rowid]) {
         t->alive[rowid] = 0;
@@ -913,7 +920,8 @@ void db_close(db_t *db) {
 
 /* ------------------------------------------------------------ row writes */
 
-static void record_undo(db_t *db, table_t *t, uint64_t rowid, int col, bool existed) {
+static void record_undo(db_t *db, table_t *t, uint64_t rowid, int col, bool existed,
+                        bool deleted) {
   undo_entry e;
   memset(&e, 0, sizeof(e));
   e.table_id = t->id;
@@ -921,6 +929,7 @@ static void record_undo(db_t *db, table_t *t, uint64_t rowid, int col, bool exis
   e.col = col;
   e.ctype = t->cols[col].type;
   e.existed = existed;
+  e.deleted = deleted;
   if (e.ctype == CT_BIGINT) {
     e.old_int = existed ? t->ints[col][rowid] : 0;
   } else if (e.ctype == CT_VARCHAR) {
@@ -945,7 +954,7 @@ uint64_t store_insert_row(db_t *db, table_t *t, const cell_value *cells) {
   uint64_t rowid = t->next_rowid++;
   table_alloc_rows(t, rowid + 1);
   for (int c = 0; c < t->ncols; c++) {
-    record_undo(db, t, rowid, c, false);
+    record_undo(db, t, rowid, c, false, false);
     if (t->cols[c].type == CT_BIGINT) {
       t->ints[c][rowid] = cells[c].ival;
     } else if (t->cols[c].type == CT_VARCHAR) {
@@ -991,7 +1000,7 @@ bool store_update_row(db_t *db, table_t *t, uint64_t rowid, const cell_value *ce
                       const bool *mask) {
   for (int c = 0; c < t->ncols; c++) {
     if (!mask[c]) continue;
-    record_undo(db, t, rowid, c, true);
+    record_undo(db, t, rowid, c, true, false);
     /* The row leaves the list of its old value before the value changes:
      * a row that stays in the list of the old value would be found twice
      * and the chain of the list would be broken. */
@@ -1027,7 +1036,10 @@ bool store_update_row(db_t *db, table_t *t, uint64_t rowid, const cell_value *ce
 }
 
 bool store_delete_row(db_t *db, table_t *t, uint64_t rowid) {
-  for (int c = 0; c < t->ncols; c++) record_undo(db, t, rowid, c, true);
+  /* The row was removed by this statement: the rollback has to bring it
+   * back.  The flag is set on the first column, the rollback restores the
+   * row once. */
+  for (int c = 0; c < t->ncols; c++) record_undo(db, t, rowid, c, true, c == 0);
   t->alive[rowid] = 0;
   t->nlive--;
   if (t->pk_idx >= 0) pkmap_del(t, t->pk[rowid]);
@@ -1074,6 +1086,7 @@ static bool log_create_table_frame(db_t *db, table_t *t) {
 
 /* Removes a primary key from the hash map. */
 void store_remove_pk(table_t *t, uint64_t pk) { pkmap_del(t, pk); }
+void store_insert_pk(table_t *t, uint64_t pk, uint64_t rowid) { pkmap_put(t, pk, rowid); }
 
 /* Looks up a row by primary key. */
 bool store_lookup_pk(table_t *t, int64_t pk, uint64_t *rowid) {

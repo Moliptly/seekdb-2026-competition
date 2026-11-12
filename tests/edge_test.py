@@ -332,6 +332,31 @@ def test_filtered_column_rollback(binary, tmp):
           after == before, f"before={before} after={after}")
 
 
+def test_rollback_restores_a_deleted_row(binary, tmp):
+    """A rollback brings a deleted row back."""
+    data = tmp / "delrollback"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, a VARCHAR(8), e VECTOR(2))")
+    db.request("INSERT INTO t VALUES (1, 'x', '[1,0]'), (2, 'y', '[0,1]'), (3, 'z', '[2,2]')")
+    db.request("BEGIN")
+    db.request("DELETE FROM t WHERE id >= 1")
+    inside = db.request("SELECT id FROM t ORDER BY id")
+    db.request("ROLLBACK")
+    after = db.request("SELECT id FROM t ORDER BY id")
+    db.request("BEGIN")
+    db.request("DELETE FROM t WHERE id = 2")
+    db.request("COMMIT")
+    committed = db.request("SELECT id FROM t ORDER BY id")
+    db.shutdown()
+    check("a deleted row is gone inside the transaction", inside.get("rows") == [],
+          repr(inside.get("rows")))
+    check("a rollback brings the deleted row back",
+          after.get("rows") == [[1], [2], [3]], repr(after.get("rows")))
+    check("a committed delete keeps the row gone",
+          committed.get("rows") == [[1], [3]], repr(committed.get("rows")))
+
+
 def test_unsupported_statements(binary, tmp):
     """Unsupported statements fail but never kill the process."""
     data = tmp / "unsupported"
@@ -577,6 +602,7 @@ def main() -> int:
         test_keyword_as_column_name(binary, tmp)
         test_filtered_column_update(binary, tmp)
         test_filtered_column_rollback(binary, tmp)
+        test_rollback_restores_a_deleted_row(binary, tmp)
         test_unsupported_statements(binary, tmp)
         test_ordering_of_plain_columns(binary, tmp)
         test_varchar_length(binary, tmp)

@@ -256,6 +256,7 @@ typedef struct {
   int col;
   int ctype;
   bool existed;       /* the row did not exist before this change */
+  bool deleted;       /* the row was removed by this change */
   int64_t old_int;
   char *old_str;
   uint32_t old_strlen;
@@ -373,6 +374,7 @@ int ivf_nlist(ivf_t *ix);
 bool ivf_set_nprobe(ivf_t *ix, int nprobe);
 void ivf_free(ivf_t *ix);
 void store_remove_pk(table_t *t, uint64_t pk);
+void store_insert_pk(table_t *t, uint64_t pk, uint64_t rowid);
 bool txn_commit(db_t *db);
 void txn_rollback(db_t *db);
 

@@ -98,7 +98,7 @@ def main() -> int:
             action = rng.choice(["insert", "insert", "update", "delete", "select",
                                   "select", "select_filtered", "topk", "topk_filtered",
                                   "update_where", "delete_where", "vector_index", "topk_ann",
-                                  "failed_insert", "delete_reinsert",
+                                  "failed_insert", "delete_reinsert", "crash", "txn_many",
                                   "txn_commit", "txn_rollback"])
             if action == "insert":
                 n = rng.randint(1, 4)
@@ -182,6 +182,43 @@ def main() -> int:
                 check("delete_where", resp.get("affected_rows"), len(hit))
                 for i in hit:
                     del model.rows[i]
+            elif action == "txn_many":
+                # a transaction with several statements, committed or rolled back
+                saved = model.copy()
+                db.request("BEGIN")
+                for _ in range(rng.randint(1, 4)):
+                    what = rng.choice(["insert", "update", "delete"])
+                    if what == "insert":
+                        vec = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]
+                        cat = rng.choice(["a", "b", "c"])
+                        i = next_id
+                        next_id += 1
+                        db.request(f"INSERT INTO t VALUES ({i}, '{cat}', '[{fmt(vec)}]')")
+                        model.rows[i] = (cat, vec)
+                    elif what == "update" and model.rows:
+                        i = rng.choice(sorted(model.rows))
+                        vec = [f32(round(rng.uniform(-3, 3), 3)) for _ in range(DIM)]
+                        db.request(f"UPDATE t SET e = '[{fmt(vec)}]' WHERE id = {i}")
+                        model.rows[i] = (model.rows[i][0], vec)
+                    elif what == "delete" and model.rows:
+                        i = rng.choice(sorted(model.rows))
+                        db.request(f"DELETE FROM t WHERE id = {i}")
+                        del model.rows[i]
+                if rng.random() < 0.5:
+                    db.request("COMMIT")
+                else:
+                    db.request("ROLLBACK")
+                    model = saved
+                resp = db.request("SELECT id FROM t ORDER BY id")
+                check("txn_many", [r[0] for r in resp.get("rows", [])], sorted(model.rows))
+            elif action == "crash":
+                # a forced termination between two statements: everything that
+                # was committed has to be there after the restart
+                db.kill()
+                db = Database(args.binary, tmp / "data")
+                db.start()
+                resp = db.request("SELECT id FROM t ORDER BY id")
+                check("crash_restart", [r[0] for r in resp.get("rows", [])], sorted(model.rows))
             elif action == "failed_insert":
                 # a multi row insert with a bad value in the middle must not
                 # apply any of its rows
