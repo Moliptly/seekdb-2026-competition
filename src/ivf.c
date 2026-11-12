@@ -17,6 +17,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define IVF_MAGIC 0x4d564446u /* "MVDF" */
@@ -375,6 +376,7 @@ bool ivf_load(db_t *db, table_t *t) {
   if (ix->log_fd >= 0) {
     lseek(ix->log_fd, 0, SEEK_SET);
     unsigned char rec[12];
+    uint64_t good = 0;
     while (read(ix->log_fd, rec, sizeof(rec)) == (ssize_t)sizeof(rec)) {
       uint32_t c;
       uint64_t r;
@@ -389,6 +391,18 @@ bool ivf_load(db_t *db, table_t *t) {
         list_push(&ix->lists[c], r);
         if (ix->cluster_of && r < ix->cluster_of_len) ix->cluster_of[r] = c;
         ix->rows_indexed++;
+      }
+      good += sizeof(rec);
+    }
+    /* A record that was torn by a crash is cut away: the records that
+     * follow it would never be read again. */
+    {
+      struct stat st;
+      if (fstat(ix->log_fd, &st) == 0 && (uint64_t)st.st_size > good) {
+        if (ftruncate(ix->log_fd, (off_t)good) == 0) {
+          fprintf(stderr, "[mvdb] the index log of table %llu was cut at %llu bytes\n",
+                  (unsigned long long)t->id, (unsigned long long)good);
+        }
       }
     }
     lseek(ix->log_fd, 0, SEEK_END);

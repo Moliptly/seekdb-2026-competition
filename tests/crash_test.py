@@ -170,6 +170,94 @@ def test_open_transaction_is_lost_by_the_crash(binary: str, tmp: Path):
     check("an open transaction is lost by the crash", ok, json.dumps(rows, ensure_ascii=False))
 
 
+def log_frames(path: Path):
+    """The frames of the log: a list of (type, payload) tuples."""
+    data = path.read_bytes()
+    frames = []
+    off = 0
+    while off + 9 <= len(data):
+        length = int.from_bytes(data[off:off + 4], "little")
+        ftype = data[off + 8]
+        payload = data[off + 9:off + 9 + length]
+        if len(payload) < length:
+            break
+        frames.append((ftype, payload))
+        off += 9 + length
+    return frames
+
+
+def test_a_torn_tail_is_cut(binary: str, tmp: Path):
+    """A crash between the header and the payload of a frame leaves a tail
+    that the next start has to cut away.
+
+    The frames that are written after such a tear have to be read again
+    after the next restart, so the log must not keep the torn frame.
+    """
+    data = tmp / "torn"
+    db = Database(binary, data)
+    db.start()
+    must(db, "CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(8))")
+    must(db, "INSERT INTO t VALUES (1, 'a')")
+    db.kill()
+
+    # the tail of the log is torn: half of a frame
+    log = data / "heap.log"
+    with open(log, "ab") as f:
+        f.write(b"\x20\x00\x00\x00")
+
+    db = Database(binary, data)
+    db.start()
+    r1 = db.request("SELECT id, v FROM t ORDER BY id")
+    must(db, "INSERT INTO t VALUES (2, 'b')")
+    db.shutdown()
+
+    db = Database(binary, data)
+    db.start()
+    r2 = db.request("SELECT id, v FROM t ORDER BY id")
+    db.shutdown()
+    ok = rows_of(r1) == [[1, "a"]] and rows_of(r2) == [[1, "a"], [2, "b"]]
+    check("a torn tail is cut and the later commits survive", ok,
+          f"first={rows_of(r1)} second={rows_of(r2)}")
+
+
+def test_uncommitted_frames_are_not_mixed(binary: str, tmp: Path):
+    """The frames of a transaction that never committed must not be applied
+    together with the frames of a later transaction.
+
+    The log of a run that was killed between the frames of a transaction and
+    its commit frame ends with the frames of that transaction.  The next run
+    has to drop them, even when it uses the same transaction number.
+    """
+    data = tmp / "mixed"
+    db = Database(binary, data)
+    db.start()
+    must(db, "CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(8))")
+    must(db, "INSERT INTO t VALUES (1, 'a')")
+    db.kill()
+
+    # the commit frame of the insert is removed: the insert looks like a
+    # transaction that was killed before its commit frame was written
+    log = data / "heap.log"
+    frames = log_frames(log)
+    raw = log.read_bytes()
+    off = 0
+    for ftype, payload in frames[:-1]:
+        off += 9 + len(payload)
+    log.write_bytes(raw[:off])
+
+    db = Database(binary, data)
+    db.start()
+    # a read does not write any frame, so the next statement is the first
+    # transaction of this run
+    db.request("SELECT id FROM t")
+    must(db, "INSERT INTO t VALUES (2, 'b')")
+    r = db.request("SELECT id, v FROM t ORDER BY id")
+    db.shutdown()
+    ok = rows_of(r) == [[2, "b"]]
+    check("the frames of a transaction that never committed are dropped", ok,
+          json.dumps(rows_of(r), ensure_ascii=False))
+
+
 def test_committed_survives(binary: str, tmp: Path):
     """A committed insert is still there after SIGKILL."""
     data = tmp / "committed"
@@ -304,6 +392,8 @@ def main() -> int:
         test_rollback_of_a_vector_survives_the_restart(binary, tmp)
         test_pool_backed_table_survives_the_restart(binary, tmp)
         test_open_transaction_is_lost_by_the_crash(binary, tmp)
+        test_a_torn_tail_is_cut(binary, tmp)
+        test_uncommitted_frames_are_not_mixed(binary, tmp)
         test_committed_survives(binary, tmp)
         test_uncommitted_is_lost(binary, tmp)
         test_no_partial_statement(binary, tmp)

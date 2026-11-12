@@ -655,6 +655,7 @@ typedef struct {
   int fd;
   unsigned char buf[65536];
   size_t len, pos;
+  uint64_t off;   /* the number of bytes read from the file */
 } lreader;
 
 static bool lr_fill(lreader *r) {
@@ -677,6 +678,7 @@ static bool lr_read(lreader *r, void *dst, size_t n) {
     r->pos += take;
     got += take;
   }
+  r->off += got;
   return true;
 }
 
@@ -811,11 +813,16 @@ static bool db_recover(db_t *db) {
   r.fd = db->log_fd;
   r.len = 0;
   r.pos = 0;
+  r.off = 0;
   pending_frame *pend = NULL;
   size_t pend_n = 0, pend_cap = 0;
   uint64_t pend_txn = 0;
   bool have_pend = false;
   bool ok = true;
+  /* the end of the last frame that was read completely */
+  uint64_t good = 0;
+  /* the highest transaction number of the log */
+  uint64_t max_txn = 0;
   for (;;) {
     unsigned char hdr[FRAME_HDR + 1];
     if (!lr_read(&r, hdr, FRAME_HDR + 1)) break;   /* clean or torn end of file */
@@ -827,9 +834,12 @@ static bool db_recover(db_t *db) {
     if (!payload) { ok = false; break; }
     if (len && !lr_read(&r, payload, len)) { free(payload); break; }
     if (crc32_buf(payload, len) != crc) { free(payload); break; }
+    /* the frame is complete: the log may be cut here */
+    good = r.off;
 
     if (type == LOG_TXN_COMMIT) {
       uint64_t txn = len >= 8 ? get_u64(payload) : 0;
+      if (txn > max_txn) max_txn = txn;
       if (have_pend && pend_txn == txn) {
         for (size_t i = 0; i < pend_n; i++) {
           if (pend[i].type == LOG_CREATE_TABLE) recover_create_table(db, pend[i].data, pend[i].len);
@@ -852,6 +862,7 @@ static bool db_recover(db_t *db) {
       continue;
     }
     uint64_t txn = len >= 8 ? get_u64(payload) : 0;
+    if (txn > max_txn) max_txn = txn;
     if (have_pend && pend_n > 0 && txn != pend_txn) {
       /* a different transaction starts: the previous one never committed */
       for (size_t i = 0; i < pend_n; i++) free(pend[i].data);
@@ -873,6 +884,20 @@ static bool db_recover(db_t *db) {
   }
   for (size_t i = 0; i < pend_n; i++) free(pend[i].data);
   free(pend);
+  /* A crash can tear the last frame: the header is written before the
+   * payload, so a kill between the two writes leaves a frame without its
+   * content.  The log is cut at the end of the last complete frame, or the
+   * frames that follow the tear would never be read again. */
+  if (db->log_size > good) {
+    if (ftruncate(db->log_fd, (off_t)good) == 0) {
+      db->log_size = good;
+      fprintf(stderr, "[mvdb] the log was cut at %llu bytes\n", (unsigned long long)good);
+    }
+  }
+  /* The transaction numbers continue after the highest one of the log: a
+   * number that is used twice would let the frames of a transaction that
+   * never committed be applied together with the frames of a later one. */
+  if (max_txn >= db->next_txn) db->next_txn = max_txn + 1;
   return ok;
 }
 
