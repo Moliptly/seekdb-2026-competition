@@ -579,6 +579,28 @@ def test_large_table_fallback(binary, tmp):
           f"cached={before.get('rows', [])[:1]} pool={after.get('rows', [])[:1]}")
 
 
+def test_order_by_expression(binary, tmp):
+    """The ordering term can be the distance function itself.
+
+    The public samples always order by an alias, but "ORDER BY
+    L2_DISTANCE(e, '[...]')" is the same query written out.
+    """
+    data = tmp / "orderby"
+    db = Database(binary, data)
+    db.start()
+    db.request("CREATE TABLE t (id BIGINT PRIMARY KEY, e VECTOR(2))")
+    db.request("INSERT INTO t VALUES (1, '[3,4]'), (2, '[0,0]'), (3, '[6,8]')")
+    r1 = db.request("SELECT id FROM t ORDER BY L2_DISTANCE(e, '[0,0]') LIMIT 2")
+    r2 = db.request("SELECT id FROM t ORDER BY L2_DISTANCE(e, '[0,0]') DESC LIMIT 2")
+    r3 = db.request("SELECT id, L2_DISTANCE(e, '[0,0]') FROM t "
+                    "ORDER BY L2_DISTANCE(e, '[0,0]') LIMIT 2")
+    db.shutdown()
+    ok = (r1.get("rows") == [[2], [1]] and r2.get("rows") == [[3], [1]]
+          and r3.get("rows") == [[2, 0.0], [1, 5.0]])
+    check("the ordering term can be the distance function", ok,
+          f"{r1.get('rows')} {r2.get('rows')} {r3.get('rows')}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", default="./minivectordb")
@@ -611,6 +633,7 @@ def main() -> int:
         test_writes_only_in_the_data_dir(binary, tmp)
         test_ann_semantics(binary, tmp)
         test_ann_no_duplicate_after_vector_update(binary, tmp)
+        test_order_by_expression(binary, tmp)
     finally:
         if args.keep:
             print(f"kept {tmp}")

@@ -450,7 +450,6 @@ static cond *parse_cond(parser *ps) {
     } else if (ps->cur.kind == T_FLOAT) {
       c->is_float = true;
       c->fval = ps->cur.dval;
-      c->ival = (int64_t)c->fval;
       next_token(ps);
     } else if (ps->cur.kind == T_STRING) {
       c->sval = ps->cur.sval;
@@ -491,8 +490,12 @@ static expr *parse_value(parser *ps) {
     return e;
   }
   if (ps->cur.kind == T_FLOAT) {
-    e->kind = EX_INT;
-    e->ival = (int64_t)ps->cur.dval;
+    /* The value keeps its text: a number that does not fit into a BIGINT
+     * must be refused instead of being changed silently. */
+    e->kind = EX_FLOAT;
+    e->dval = ps->cur.dval;
+    e->sval = arena_strndup(ps->a, ps->cur.text, ps->cur.len);
+    e->slen = (int)ps->cur.len;
     next_token(ps);
     return e;
   }
@@ -732,7 +735,28 @@ static bool parse_select(parser *ps, stmt *st) {
   if (ps->cur.kind == T_ORDER) {
     next_token(ps);
     if (!expect_tok(ps, T_BY, "'BY'")) return false;
-    if (name_token(ps)) {
+    /* The ordering term is checked before the name: the name of a keyword
+     * is a legal column name, but "L2_DISTANCE(...)" is an expression. */
+    if (ps->cur.kind == T_L2) {
+      expr *e = parse_expr(ps);
+      if (!e) return false;
+      /* keep the ordering expression as a hidden extra item */
+      expr *ni = (expr *)arena_alloc(ps->a, (size_t)(st->nitems + 1) * sizeof(expr));
+      if (!ni) { perr(ps, "out of memory"); return false; }
+      memcpy(ni, items, (size_t)st->nitems * sizeof(expr));
+      ni[st->nitems] = *e;
+      items = ni;
+      st->items = items;
+      st->order_kind = 2;
+      st->order_item = st->nitems;
+      st->nitems++;
+      st->topk_item = st->order_item;
+      /* an alias on the ordering term is allowed and ignored */
+      if (accept_tok(ps, T_AS)) {
+        char alias[64];
+        if (!copy_ident(ps, alias, sizeof(alias))) return false;
+      }
+    } else if (name_token(ps)) {
       char name[64];
       if (!copy_ident(ps, name, sizeof(name))) return false;
       /* An output alias wins over a table column so that
@@ -750,20 +774,6 @@ static bool parse_select(parser *ps, stmt *st) {
         st->order_col = -1;
         snprintf(st->order_colname, sizeof(st->order_colname), "%s", name);
       }
-    } else if (ps->cur.kind == T_L2) {
-      expr *e = parse_expr(ps);
-      if (!e) return false;
-      /* keep the ordering expression as a hidden extra item */
-      expr *ni = (expr *)arena_alloc(ps->a, (size_t)(st->nitems + 1) * sizeof(expr));
-      if (!ni) { perr(ps, "out of memory"); return false; }
-      memcpy(ni, items, (size_t)st->nitems * sizeof(expr));
-      ni[st->nitems] = *e;
-      items = ni;
-      st->items = items;
-      st->order_kind = 2;
-      st->order_item = st->nitems;
-      st->nitems++;
-      st->topk_item = st->order_item;
     } else {
       perr(ps, "unsupported ORDER BY term");
       return false;

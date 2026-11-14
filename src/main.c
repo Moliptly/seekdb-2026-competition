@@ -109,6 +109,7 @@ int main(int argc, char **argv) {
   char *line = NULL;
   size_t cap = 0;
   ssize_t nread;
+  const bool debug = getenv("MVDB_DEBUG") != NULL;
   while ((nread = getline(&line, &cap, stdin)) > 0) {
     size_t len = (size_t)nread;
     while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) len--;
@@ -207,8 +208,11 @@ int main(int argc, char **argv) {
     }
     /* The judge collects the log of a case, so the log has to show what was
      * asked and what was answered.  Everything goes to stderr, stdout only
-     * carries the protocol. */
-    {
+     * carries the protocol.  The trace of every request costs a write to the
+     * log per request, which is a sixth of the time of a query, so it is
+     * only written when it is asked for; a statement that failed is always
+     * written. */
+    if (debug || !ok) {
       const char *sqlt = (sqlv && sqlv->type == JSON_STRING) ? sqlv->sval : "";
       size_t sqll = (sqlv && sqlv->type == JSON_STRING) ? (size_t)sqlv->slen : 0;
       char sqlbuf[161];

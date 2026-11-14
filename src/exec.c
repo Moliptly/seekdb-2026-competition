@@ -331,6 +331,27 @@ static bool literal_to_cell(exectx *c, table_t *t, int col, const expr *e, cell_
     case CT_BIGINT:
       if (e->kind == EX_INT) {
         out->ival = e->ival;
+      } else if (e->kind == EX_FLOAT) {
+        /* The text of the number decides: a number that does not fit into a
+         * BIGINT, or one with a fraction, is refused.  Converting it would
+         * change the value silently. */
+        const char *txt = e->sval ? e->sval : "";
+        if (!strpbrk(txt, ".eE")) {
+          errno = 0;
+          char *endp = NULL;
+          long long v = strtoll(txt, &endp, 10);
+          if (errno == ERANGE || !endp || *endp != '\0') {
+            return fail(c, "invalid_value", "'%s' is not a BIGINT value", txt);
+          }
+          out->ival = (int64_t)v;
+        } else {
+          double d = e->dval;
+          if (!isfinite(d) || d >= 9223372036854775808.0 || d < -9223372036854775808.0 ||
+              d != floor(d)) {
+            return fail(c, "invalid_value", "'%s' is not a BIGINT value", txt);
+          }
+          out->ival = (int64_t)d;
+        }
       } else if (e->kind == EX_STR) {
         char *endp = NULL;
         errno = 0;
@@ -345,6 +366,10 @@ static bool literal_to_cell(exectx *c, table_t *t, int col, const expr *e, cell_
       return true;
     case CT_VARCHAR:
       if (e->kind == EX_STR) {
+        out->sval = e->sval ? e->sval : (char *)"";
+        out->slen = (uint32_t)e->slen;
+      } else if (e->kind == EX_FLOAT) {
+        /* the text of the number is kept: "3.5" does not become "3" */
         out->sval = e->sval ? e->sval : (char *)"";
         out->slen = (uint32_t)e->slen;
       } else if (e->kind == EX_INT) {

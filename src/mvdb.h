@@ -91,7 +91,7 @@ typedef struct {
   bool pk;
 } column_t;
 
-typedef enum { EX_COL = 1, EX_L2, EX_INT, EX_STR, EX_VEC } expr_kind;
+typedef enum { EX_COL = 1, EX_L2, EX_INT, EX_STR, EX_VEC, EX_FLOAT } expr_kind;
 
 typedef struct expr {
   expr_kind kind;
@@ -100,7 +100,8 @@ typedef struct expr {
   float *vec;         /* EX_L2 query vector / EX_VEC literal value */
   int veclen;
   int64_t ival;       /* EX_INT */
-  char *sval;         /* EX_STR */
+  double dval;        /* EX_FLOAT */
+  char *sval;         /* EX_STR, EX_FLOAT: the text of the literal */
   int slen;
   char alias[64];     /* explicit AS alias */
   bool has_alias;
