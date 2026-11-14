@@ -229,14 +229,18 @@ def test_uncommitted_frames_are_not_mixed(binary: str, tmp: Path):
     has to drop them, even when it uses the same transaction number.
     """
     data = tmp / "mixed"
+    # the first run creates the table and fills it in one transaction
     db = Database(binary, data)
     db.start()
+    must(db, "BEGIN")
     must(db, "CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(8))")
     must(db, "INSERT INTO t VALUES (1, 'a')")
+    must(db, "INSERT INTO t VALUES (2, 'b')")
+    must(db, "COMMIT")
     db.kill()
 
-    # the commit frame of the insert is removed: the insert looks like a
-    # transaction that was killed before its commit frame was written
+    # the commit frame is removed: the transaction looks like one that was
+    # killed before its commit frame was written
     log = data / "heap.log"
     frames = log_frames(log)
     raw = log.read_bytes()
@@ -245,15 +249,21 @@ def test_uncommitted_frames_are_not_mixed(binary: str, tmp: Path):
         off += 9 + len(payload)
     log.write_bytes(raw[:off])
 
+    # the second run writes the table again with one row
     db = Database(binary, data)
     db.start()
-    # a read does not write any frame, so the next statement is the first
-    # transaction of this run
-    db.request("SELECT id FROM t")
-    must(db, "INSERT INTO t VALUES (2, 'b')")
+    must(db, "CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(8))")
+    must(db, "INSERT INTO t VALUES (3, 'c')")
+    db.shutdown()
+
+    # the third run reads the log again: the frames of the transaction that
+    # never committed are still in it, and they must not be applied together
+    # with the frames of the row that was written afterwards
+    db = Database(binary, data)
+    db.start()
     r = db.request("SELECT id, v FROM t ORDER BY id")
     db.shutdown()
-    ok = rows_of(r) == [[2, "b"]]
+    ok = rows_of(r) == [[3, "c"]]
     check("the frames of a transaction that never committed are dropped", ok,
           json.dumps(rows_of(r), ensure_ascii=False))
 
