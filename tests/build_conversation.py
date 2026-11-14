@@ -260,6 +260,22 @@ conversations = [
                    "向量索引；日志尾部截断到最后一条完整帧；事务号跨重启唯一。崩溃用例从 11 个加到 "
                    "13 个，索引维护用例扩成小表和大表两段（大表带一次重启），公开用例与全部自测通过。",
     },
+    {
+        "id": "c26",
+        "role": "student",
+        "content": "把公开用例的写法一个一个展开之后，又撞出两处：排序项写成 L2_DISTANCE(e, '[...]') "
+                   "而不是别名时被拒了——解析器先去找列名，而关键字当列名是合法的，于是距离函数永远"
+                   "轮不到；还有一个字面量 9223372036854775808 存进 BIGINT 时没有做范围检查，"
+                   "它变成了最小的那个 BIGINT，撞上了已有的一行，报出来的却是主键重复。"
+                   "两处都是「写错了但看不出来」，边界用例里才暴露。",
+    },
+    {
+        "id": "a5",
+        "role": "agent",
+        "content": "排序项先判断是不是距离函数再判断是不是列名；BIGINT 的取值改成按字面量的文本判断，"
+                   "超出范围或带小数的数字一律拒收，写进 VARCHAR 的数字保留原来的写法。"
+                   "负数 LIMIT 也改成报错。边界用例从 34 项加到 35 项，公开用例与自测全部通过。",
+    },
 ]
 
 experiments = [
@@ -597,6 +613,28 @@ experiments = [
         "conclusion": "插入根本没发生：'committed' 是九个字符，VARCHAR(8) 装不下，插入被正确拒绝了，"
                       "表当然是空的，我的用例却去怪恢复逻辑。教训是测试的前置语句必须断言成功，"
                       "不能默默失败——现在所有前置语句都走 must()，语句不成功就直接报错。",
+    },
+    {
+        "id": "e32",
+        "title": "排序项写成距离函数时被解析器拒绝",
+        "hypothesis": "排序项可以是一个名字（列名或别名），也可以直接写距离函数。",
+        "method": "把公开用例里的别名写法换成直接写 L2_DISTANCE(e, '[...]')，看解析器怎么反应",
+        "output": "expr order only {'code': 'unsupported_sql', 'message': 'unexpected trailing input'}",
+        "conclusion": "解析器先去找一个名字当排序项，而关键字当列名是合法的，所以 L2_DISTANCE 被当成了"
+                      "列名，后面的括号就成了多余的输入。排序项改成先判断是不是距离函数，"
+                      "再判断是不是名字；距离函数后面还可以跟一个别名。",
+    },
+    {
+        "id": "e33",
+        "title": "超出 BIGINT 的字面量变成了最小的那个数",
+        "hypothesis": "BIGINT 是 64 位有符号整数，超出范围的字面量应该被拒绝。",
+        "method": "往 BIGINT 列里写 9223372036854775808 和 -9223372036854775809，看存进去的是什么",
+        "output": "int64 overflow ERR duplicate_key：报的是主键重复，因为这个字面量变成了 "
+                  "-9223372036854775808，撞上了已经存在的那一行",
+        "conclusion": "词法器用 strtoll 判断一个数字是不是整数，越界时errno 是 ERANGE，"
+                      "但代码把它当成了浮点数，转换回 int64 就是未定义行为，恰好落到了最小值上。"
+                      "现在按字面量的文本判断：超出范围或者带小数的数字一律拒收，"
+                      "写进 VARCHAR 的数字保留原来的写法（3.5 不再变成 3）。",
     },
 ]
 
@@ -948,6 +986,27 @@ evidence_index = [
                              "quote": "我却先去怀疑恢复逻辑"},
         "result_evidence": {"pointer": "/experiments/30/output",
                              "quote": "插入行的那一帧根本不在日志里"},
+    },
+    {
+        "instance": "e32",
+        "dimension": "技术理解与迁移",
+        "tier": 1.5,
+        "reason": "把公开用例的别名写法展开成直接写距离函数，发现排序项的解析顺序挡住了它。",
+        "student_evidence": {"pointer": "/conversations/29/content",
+                             "quote": "排序项写成 L2_DISTANCE(e, '[...]')"},
+        "result_evidence": {"pointer": "/experiments/31/output",
+                             "quote": "'message': 'unexpected trailing input'"},
+    },
+    {
+        "instance": "e33",
+        "dimension": "独立验证与质疑",
+        "tier": 2,
+        "reason": "用越界的整数探测 BIGINT 的取值范围，发现错误码是主键重复，说明值被静默改成了"
+                  "最小值；按字面量文本判断之后报的是 invalid_value。",
+        "student_evidence": {"pointer": "/conversations/29/content",
+                             "quote": "它变成了最小的那个 BIGINT，撞上了已有的一行"},
+        "result_evidence": {"pointer": "/experiments/32/output",
+                             "quote": "int64 overflow ERR duplicate_key"},
     },
     {
         "instance": "e24",

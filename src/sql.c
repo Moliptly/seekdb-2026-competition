@@ -784,6 +784,8 @@ static bool parse_select(parser *ps, stmt *st) {
   if (ps->cur.kind == T_LIMIT) {
     next_token(ps);
     if (ps->cur.kind != T_INT) { perr(ps, "expected a LIMIT count"); return false; }
+    /* A negative count is refused: it does not mean "all rows". */
+    if (ps->cur.ival < 0) { perr(ps, "the LIMIT count must not be negative"); return false; }
     st->has_limit = true;
     st->limit = ps->cur.ival;
     next_token(ps);
